@@ -3,7 +3,7 @@
 # paint and frames
 # DONE: view
 # DONE: scroll and zoom
-# TODO: paint
+# DONE: paint - pick colour, type hex
 # TODO: frames
 # TODO: views
 # TODO: select
@@ -14,7 +14,6 @@ environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
 
 from os.path import expanduser
 import numpy as np
-import cv2 as cv
 
 from enum import Enum, auto
 import pygame
@@ -25,7 +24,7 @@ font  = pygame.font.Font(font_path, 72)
 sfont = pygame.font.Font(font_path, 12)
 
 c = type('c', (), {'__matmul__': lambda s, x: (*x.to_bytes(3, 'big'),), '__sub__': lambda s, x: (x&255,)*3})()
-c = type('c', (), {'__matmul__': lambda s, x: pygame.Color(x), '__sub__': lambda s, x: pygame.Color((x&255,)*3)})()
+# c = type('c', (), {'__matmul__': lambda s, x: pygame.Color(x), '__sub__': lambda s, x: pygame.Color((x&255,)*3)})()
 bg = c-34
 fg = c@0xff9088
 green = c@0xa0ffe0
@@ -33,17 +32,18 @@ SH = 20
 
 fps = 60
 
+DEBUG_PAD = 0
 ZOOM_FAC = 0.8
 MIN_ZOOM = 0.002
 
 w, h = res = (1280, 720)
 
-def updateStat(msg = None, update = True):
+def updateStat(msg, update = True):
 	# call this if you have a long loop that'll taking too long
 	rect = (0, h-SH, w, 21)
 	display.fill(c-0, rect)
 
-	tsurf = sfont.render(f'{zoom = }; {scroll = }', True, c--1)
+	tsurf = sfont.render(f'{msg}', True, c--1)
 	display.blit(tsurf, (5, h-SH))
 
 	if update: pygame.display.update(rect)
@@ -55,8 +55,6 @@ def resize(size):
 	updateDisplay()
 
 def updateDisplay():
-	DEBUG_PAD = 0
-
 	display.fill(bg)
 
 	# display.fill(green, (DEBUG_PAD, DEBUG_PAD, w-DEBUG_PAD*2, h-SH-DEBUG_PAD*2))
@@ -85,7 +83,7 @@ def updateDisplay():
 		x, y = to_screen_space(*crop_rect.topleft)
 		display.blit(scaled_surf, (x + DEBUG_PAD, y + DEBUG_PAD))
 	
-	updateStat(update = False)
+	updateStat(text, update = False)
 	pygame.display.flip()
 
 def toggleFullscreen():
@@ -106,11 +104,23 @@ def to_screen_space(x, y):
 class DraggingMode(Enum):
 	none = auto()
 	dragging = auto()
+	painting = auto()
+
+class Mode(Enum):
+	paint = auto()
+	type_colour = auto()
+
+valid_chars = {
+	Mode.type_colour: set('0123456789abcdefABCDEF'),
+}
 
 # TODO: frame in view{frames} in session{views}
-surf = pygame.image.load('Two Jack Lake.jpg')
+surf = pygame.image.load('berries.jpg')
 frame = pygame.surfarray.pixels3d(surf)
 
+curr_mode = Mode.paint
+paint_colour = c-0
+text = f'{int.from_bytes(paint_colour, "big"):06x}'
 scroll = [0, 0]  # object space
 dragging = DraggingMode.none
 ticks = 0
@@ -125,8 +135,30 @@ running = True
 while running:
 	for event in pygame.event.get():
 		if event.type == KEYDOWN:
-			if   event.key == K_ESCAPE: running = False
-			elif event.key == K_F11: toggleFullscreen()
+			if   event.key == K_F11: toggleFullscreen()
+
+			elif curr_mode is not Mode.paint:
+				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
+					if event.key == K_BACKSPACE:
+						split = text.rsplit(maxsplit=1)
+						if len(split) <= 1: text = ''
+						else: text = split[0]
+				elif event.key == K_BACKSPACE:
+					text = text[:-1]
+				elif event.key == K_RETURN:
+					if curr_mode is Mode.type_colour:
+						paint_colour = c@int(text[-6:], 16)
+						curr_mode = Mode.paint
+						text = f'{int.from_bytes(paint_colour, "big"):06x}'
+				elif event.key == K_ESCAPE:
+					curr_mode = Mode.paint
+					text = f'{int.from_bytes(paint_colour, "big"):06x}'
+				elif event.unicode and event.unicode in valid_chars[curr_mode]:
+					text += event.unicode
+
+			elif event.key == K_ESCAPE: running = False
+			elif event.key == K_c: curr_mode = Mode.type_colour
+
 
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)
@@ -150,15 +182,41 @@ while running:
 				scroll[1] += event.y * zoom * 12
 
 		elif event.type == MOUSEBUTTONDOWN:
-			if event.button == 1:
+			if event.button == 2:
 				dragging = DraggingMode.dragging
+			elif event.button == 1:
+				x, y = from_screen_space(event.pos)
+				x, y = int(x), int(y)
+				if not surf.get_rect().collidepoint((x, y)): continue
+
+				mods = pygame.key.get_mods()
+				print(f'{mods:x} vs {KMOD_LALT|KMOD_RALT:x}')
+				if mods & (KMOD_LALT|KMOD_RALT):
+					paint_colour = frame[x, y]
+					text = f'{int.from_bytes(paint_colour, "big"):06x}'
+					# text = f'{paint_colour:06x}'
+				else:
+					dragging = DraggingMode.painting
+
+					print('Pixel coordinate:', x, y)
+					print(frame[x, y], '->', paint_colour)
+					frame[x, y] = paint_colour
+
 		elif event.type == MOUSEBUTTONUP:
-			if event.button == 1:
+			if event.button == 2:
+				dragging = DraggingMode.none
+			elif event.button == 1:
 				dragging = DraggingMode.none
 		elif event.type == MOUSEMOTION:
 			if dragging is DraggingMode.dragging:
 				scroll[0] += event.rel[0] * zoom
 				scroll[1] += event.rel[1] * zoom
+			elif dragging is DraggingMode.painting:
+				x, y = from_screen_space(event.pos)
+				x, y = int(x), int(y)
+				print('Pixel coordinate:', x, y)
+				print(frame[x, y, :], '->', paint_colour)
+				frame[x, y, :] = paint_colour
 
 	updateDisplay()
 	ticks += clock.tick(fps)
