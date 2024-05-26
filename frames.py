@@ -1,4 +1,4 @@
-# A beautiful thing in programming is that if you make it perfect, you never have to thing about it ever again.
+# A beautiful thing in programming is that if you make it perfect, you never have to think about it ever again.
 
 # paint and frames
 # DONE: view
@@ -37,13 +37,23 @@ play_fps = 24
 DEBUG_PAD = 0
 ZOOM_FAC = 0.8
 MIN_ZOOM = 0.002
+FRAME_WIDTH = 4
 
 w, h = res = (1280, 720)
+
+PAINT_STAT  = c@0x800080
+COLOUR_STAT = c-0
+SELECT_STAT = c--1
 
 def updateStat(msg, update = True):
 	# call this if you have a long loop that'll taking too long
 	rect = (0, h-SH, w, 21)
-	display.fill(c-0, rect)
+
+	if   curr_mode is Mode.paint: col = PAINT_STAT
+	elif curr_mode is Mode.type_colour: col = COLOUR_STAT
+	elif curr_mode is Mode.select: col = SELECT_STAT
+
+	display.fill(col, rect)
 
 	tsurf = sfont.render(f'{msg}', True, c--1)
 	display.blit(tsurf, (5, h-SH))
@@ -108,26 +118,60 @@ def from_screen_space(pos):
 def to_screen_space(x, y):
 	return (x + scroll[0]) / zoom, (y + scroll[1]) / zoom
 
-class DraggingMode(Enum):
+def frame_from_screen_space(x):
+	global frame_scroll
+
+	return (x - frame_scroll) / FRAME_WIDTH
+
+def frame_to_screen_space(x):
+	global frame_scroll
+
+	return x * FRAME_WIDTH + frame_scroll
+
+class DragMode(Enum):
 	none = auto()
-	dragging = auto()
-	painting = auto()
+	scrolling = auto()
+	normal = auto()
+	frame = auto()
 
 class Mode(Enum):
 	paint = auto()
 	type_colour = auto()
+	select = auto()
 
 def render_frame_panel():
-	global frame_panel_h, curr_frame
+	global frame_panel_h, curr_frame, frame_scroll, hovered_frame, selected_frame
 
 	out = pygame.Surface((w, frame_panel_h), SRCALPHA)
 
-	out.fill((*c-27, 230))
+	if playing:
+		col = green
+	else:
+		col = c-192
 
-	out.fill(c-192, (curr_frame, 0, 1, frame_panel_h))
+	out.fill((*c-0, 230))
 
-	frame_n_surface = font.render(f'{curr_frame}', True, c-192)
-	out.blit(frame_n_surface, (curr_frame, 0))
+	valid_frames_rect = pygame.Rect(frame_to_screen_space(0), 0, len(frames) * FRAME_WIDTH, frame_panel_h)
+	out.fill((*c-27, 230), valid_frames_rect.clip(out.get_rect()))
+
+	if hovered_frame in range(len(frames)):  # NOTE: Also acts as a None-check
+		# NOTE: Redundant, we should just calculate this directly
+		# But then, we don't get the perfect x coord. Therefore, this is actually kinda ok.
+		x = frame_to_screen_space(hovered_frame)
+		out.fill(c-50, (x, 0, FRAME_WIDTH, frame_panel_h))
+
+	if selected_frame in range(len(frames)):  # NOTE: Also acts as a None-check
+		# NOTE: Redundant, we should just calculate this directly
+		# But then, we don't get the perfect x coord. Therefore, this is actually kinda ok.
+		x = frame_to_screen_space(selected_frame)
+		out.fill(c-192, (x, 0, FRAME_WIDTH, frame_panel_h))
+
+	x = frame_to_screen_space(curr_frame)
+
+	out.fill(col, (x, 0, 1, frame_panel_h))
+
+	frame_n_surface = font.render(f'{curr_frame}', True, col)
+	out.blit(frame_n_surface, (x, 0))
 
 	return out
 
@@ -150,30 +194,33 @@ surf = pygame.image.load('berries.jpg')
 # array of surfaces... would it be more efficient to store a single 3d/4d array?
 # access the surface from array rather than the other way around...
 # Apparently, that's not a thing. We'll do it like this only then.
-frames: list[pygame.Surface] = [surf]
-curr_frame = 0
 
 frame_panel_h = 100
 
+scroll = [0, 0]  # object space
+zoom = 1
 curr_mode = Mode.paint
 paint_colour = c-0
-text = f'{int.from_bytes(paint_colour, "big"):06x}'
-scroll = [0, 0]  # object space
+frame_scroll = 0
 playing = False
-dragging = DraggingMode.none
+drag_mode = DragMode.none
 ticks = 0
 
-zoom = 1
+frames: list[pygame.Surface] = [surf.copy() for i in range(16)]
+curr_frame = 0
+hovered_frame  = None  # For highlight
+selected_frame = None  # TODO: frame range
+text = f'{int.from_bytes(paint_colour, "big"):06x}'
 
 resize(res)
 pres = pygame.display.list_modes()[0]
-# pygame.key.set_repeat(500, 50)
+pygame.key.set_repeat(500, 50)
 clock = pygame.time.Clock()
 running = True
 while running:
 	for event in pygame.event.get():
 		if event.type == KEYDOWN:
-			if   event.key == K_F11: toggleFullscreen()
+			if event.key == K_F11: toggleFullscreen()
 
 			elif curr_mode is Mode.type_colour:
 				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
@@ -197,8 +244,13 @@ while running:
 				elif event.unicode and event.unicode in valid_chars[curr_mode]:
 					text += event.unicode
 
-			elif event.key == K_ESCAPE: running = False
-			elif event.key == K_c: curr_mode = Mode.type_colour
+			elif event.key == K_ESCAPE:
+				if curr_mode is not Mode.paint:
+					curr_mode = Mode.paint
+				else:
+					running = False
+			elif event.key == K_c: curr_mode = Mode.type_colour  # c for colour
+			elif event.key == K_b: curr_mode = Mode.select  # b for box select
 			elif event.key == K_SPACE: playing = not playing
 
 			elif event.key == K_LEFT:  set_frame(curr_frame - 1); playing = False
@@ -214,8 +266,17 @@ while running:
 		elif event.type == QUIT: running = False
 		elif event.type == MOUSEWHEEL:
 			mods = pygame.key.get_mods()
-			if mods & (KMOD_LCTRL|KMOD_RCTRL):
-				mouse_pos = pygame.mouse.get_pos()
+			mouse_pos = pygame.mouse.get_pos()
+
+			if mouse_pos[1] > h-SH - frame_panel_h:  # mousewheel event to frame panel
+				if mods & (KMOD_LSHIFT|KMOD_RSHIFT):
+					dx, _dy = -event.y, event.x
+				else:
+					dx, _dy = event.x, -event.y
+
+				frame_scroll -= dx * 7
+
+			elif mods & (KMOD_LCTRL|KMOD_RCTRL):
 				old_obj_space_mouse = from_screen_space(mouse_pos)
 				# the diff that we had here
 				zoom *= ZOOM_FAC ** event.y
@@ -232,34 +293,63 @@ while running:
 
 		elif event.type == MOUSEBUTTONDOWN:
 			if event.button == 3:
-				dragging = DraggingMode.dragging
+				drag_mode = DragMode.scrolling
 			elif event.button == 1:
-				x, y = from_screen_space(event.pos)
-				x, y = int(x), int(y)
-				# TODO: Start paint mode for drag
-				surf = frames[curr_frame]
-				if not surf.get_rect().collidepoint((x, y)): continue
+				if curr_mode == Mode.paint:
+					if hovered_frame in range(len(frames)):  # wrap-around would be weird
+						set_frame(hovered_frame)
+						drag_mode = DragMode.frame
+						continue
+					if hovered_frame is not None:
+						# Mouse is in frame panel. TODO: A better way.
+						continue
 
-				mods = pygame.key.get_mods()
-				if mods & (KMOD_LALT|KMOD_RALT):
-					paint_colour = surf.get_at((x, y))
-					text = f'{int.from_bytes(paint_colour, "big"):06x}'
-					# text = f'{paint_colour:06x}'
-				else:
-					dragging = DraggingMode.painting
+					x, y = from_screen_space(event.pos)
+					x, y = int(x), int(y)
 
-					surf.set_at((x, y), paint_colour)
+					surf = frames[curr_frame]
+					if not surf.get_rect().collidepoint((x, y)): continue
+
+					mods = pygame.key.get_mods()
+					if mods & (KMOD_LALT|KMOD_RALT):
+						paint_colour = surf.get_at((x, y))
+						text = f'{int.from_bytes(paint_colour, "big"):06x}'
+						# text = f'{paint_colour:06x}'
+					else:
+						drag_mode = DragMode.normal
+
+						surf.set_at((x, y), paint_colour)
+
+				elif curr_mode == Mode.select:
+					if hovered_frame is None:
+						# TODO: Cubical/rectangular selection logic
+						continue
+					elif hovered_frame in range(len(frames)):
+						selected_frame = hovered_frame
+						print('Selected', selected_frame)
 
 		elif event.type == MOUSEBUTTONUP:
 			if event.button == 3:
-				dragging = DraggingMode.none
+				drag_mode = DragMode.none
 			elif event.button == 1:
-				dragging = DraggingMode.none
+				drag_mode = DragMode.none
 		elif event.type == MOUSEMOTION:
-			if dragging is DraggingMode.dragging:
+			if drag_mode is DragMode.none:
+				hovered_frame = None
+
+				if event.pos[1] < h-SH - frame_panel_h:
+					# TODO: Cubical/rectangular selection logic
+					continue
+				else:
+					hovered_frame = int(frame_from_screen_space(event.pos[0]))
+
+			elif drag_mode is DragMode.scrolling:
 				scroll[0] += event.rel[0] * zoom
 				scroll[1] += event.rel[1] * zoom
-			elif dragging is DraggingMode.painting:
+
+			elif drag_mode is DragMode.normal:
+				# TODO: autoscroll
+
 				x, y = from_screen_space(event.pos)
 				x, y = int(x), int(y)
 
@@ -267,6 +357,10 @@ while running:
 				if not surf.get_rect().collidepoint((x, y)): continue
 
 				surf.set_at((x, y), paint_colour)
+
+			elif drag_mode is DragMode.frame:
+				hovered_frame = int(frame_from_screen_space(event.pos[0]))
+				if hovered_frame in range(len(frames)): set_frame(hovered_frame)
 
 	updateDisplay()
 	frame_time = clock.tick(fps)
