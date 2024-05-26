@@ -14,13 +14,14 @@ environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
 
 from os.path import expanduser
 import numpy as np
+import tools
 
 from enum import Enum, auto
 import pygame
 from pygame.locals import *
 pygame.font.init()
 font_path = expanduser('~/Code/Product Sans Regular.ttf')
-font  = pygame.font.Font(font_path, 72)
+font  = pygame.font.Font(font_path, 16)
 sfont = pygame.font.Font(font_path, 12)
 
 c = type('c', (), {'__matmul__': lambda s, x: (*x.to_bytes(3, 'big'),), '__sub__': lambda s, x: (x&255,)*3})()
@@ -31,6 +32,7 @@ green = c@0xa0ffe0
 SH = 20
 
 fps = 60
+play_fps = 24
 
 DEBUG_PAD = 0
 ZOOM_FAC = 0.8
@@ -67,6 +69,8 @@ def updateDisplay():
 	obj_space_w = (w - DEBUG_PAD*2) * zoom + 2
 	obj_space_h = (h - SH - DEBUG_PAD*2) * zoom + 2
 
+	surf = frames[curr_frame]
+
 	# still in obj space
 	crop_rect = pygame.Rect(
 		(-scroll[0], -scroll[1]), (obj_space_w, obj_space_h)
@@ -83,6 +87,9 @@ def updateDisplay():
 		x, y = to_screen_space(*crop_rect.topleft)
 		display.blit(scaled_surf, (x + DEBUG_PAD, y + DEBUG_PAD))
 	
+	frame_panel_surf = render_frame_panel()
+	display.blit(frame_panel_surf, (0, h - SH - frame_panel_h))
+
 	updateStat(text, update = False)
 	pygame.display.flip()
 
@@ -110,18 +117,49 @@ class Mode(Enum):
 	paint = auto()
 	type_colour = auto()
 
+def render_frame_panel():
+	global frame_panel_h, curr_frame
+
+	out = pygame.Surface((w, frame_panel_h), SRCALPHA)
+
+	out.fill((*c-27, 230))
+
+	out.fill(c-192, (curr_frame, 0, 1, frame_panel_h))
+
+	frame_n_surface = font.render(f'{curr_frame}', True, c-192)
+	out.blit(frame_n_surface, (curr_frame, 0))
+
+	return out
+
+def set_frame(frame):
+	global ticks, curr_frame
+
+	curr_frame = frame % len(frames)
+	ticks = curr_frame * 1000 // play_fps
+
 valid_chars = {
 	Mode.type_colour: set('0123456789abcdefABCDEF'),
 }
 
 # TODO: frame in view{frames} in session{views}
 surf = pygame.image.load('berries.jpg')
-frame = pygame.surfarray.pixels3d(surf)
+# We don't do this here.
+# We'll take the reference when we perform operations.
+# frame = pygame.surfarray.pixels3d(surf)
+
+# array of surfaces... would it be more efficient to store a single 3d/4d array?
+# access the surface from array rather than the other way around...
+# Apparently, that's not a thing. We'll do it like this only then.
+frames: list[pygame.Surface] = [surf]
+curr_frame = 0
+
+frame_panel_h = 100
 
 curr_mode = Mode.paint
 paint_colour = c-0
 text = f'{int.from_bytes(paint_colour, "big"):06x}'
 scroll = [0, 0]  # object space
+playing = False
 dragging = DraggingMode.none
 ticks = 0
 
@@ -137,7 +175,7 @@ while running:
 		if event.type == KEYDOWN:
 			if   event.key == K_F11: toggleFullscreen()
 
-			elif curr_mode is not Mode.paint:
+			elif curr_mode is Mode.type_colour:
 				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
 					if event.key == K_BACKSPACE:
 						split = text.rsplit(maxsplit=1)
@@ -148,17 +186,28 @@ while running:
 				elif event.key == K_RETURN:
 					if curr_mode is Mode.type_colour:
 						paint_colour = c@int(text[-6:], 16)
-						curr_mode = Mode.paint
 						text = f'{int.from_bytes(paint_colour, "big"):06x}'
-				elif event.key == K_ESCAPE:
 					curr_mode = Mode.paint
-					text = f'{int.from_bytes(paint_colour, "big"):06x}'
+
+				elif event.key == K_ESCAPE:
+					if curr_mode is Mode.type_colour:
+						text = f'{int.from_bytes(paint_colour, "big"):06x}'
+					curr_mode = Mode.paint
+
 				elif event.unicode and event.unicode in valid_chars[curr_mode]:
 					text += event.unicode
 
 			elif event.key == K_ESCAPE: running = False
 			elif event.key == K_c: curr_mode = Mode.type_colour
+			elif event.key == K_SPACE: playing = not playing
 
+			elif event.key == K_LEFT:  set_frame(curr_frame - 1); playing = False
+			elif event.key == K_RIGHT: set_frame(curr_frame + 1); playing = False
+			elif event.key in (K_HOME, K_KP7): set_frame(0); playing = False
+			elif event.key in (K_END, K_KP1): set_frame(-1); playing = False
+
+			# COMMANDS!
+			elif event.key == K_f: set_frame(tools.new_frame(frames, curr_frame))
 
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)
@@ -182,28 +231,27 @@ while running:
 				scroll[1] += event.y * zoom * 12
 
 		elif event.type == MOUSEBUTTONDOWN:
-			if event.button == 2:
+			if event.button == 3:
 				dragging = DraggingMode.dragging
 			elif event.button == 1:
 				x, y = from_screen_space(event.pos)
 				x, y = int(x), int(y)
+				# TODO: Start paint mode for drag
+				surf = frames[curr_frame]
 				if not surf.get_rect().collidepoint((x, y)): continue
 
 				mods = pygame.key.get_mods()
-				print(f'{mods:x} vs {KMOD_LALT|KMOD_RALT:x}')
 				if mods & (KMOD_LALT|KMOD_RALT):
-					paint_colour = frame[x, y]
+					paint_colour = surf.get_at((x, y))
 					text = f'{int.from_bytes(paint_colour, "big"):06x}'
 					# text = f'{paint_colour:06x}'
 				else:
 					dragging = DraggingMode.painting
 
-					print('Pixel coordinate:', x, y)
-					print(frame[x, y], '->', paint_colour)
-					frame[x, y] = paint_colour
+					surf.set_at((x, y), paint_colour)
 
 		elif event.type == MOUSEBUTTONUP:
-			if event.button == 2:
+			if event.button == 3:
 				dragging = DraggingMode.none
 			elif event.button == 1:
 				dragging = DraggingMode.none
@@ -214,9 +262,19 @@ while running:
 			elif dragging is DraggingMode.painting:
 				x, y = from_screen_space(event.pos)
 				x, y = int(x), int(y)
-				print('Pixel coordinate:', x, y)
-				print(frame[x, y, :], '->', paint_colour)
-				frame[x, y, :] = paint_colour
+
+				surf = frames[curr_frame]
+				if not surf.get_rect().collidepoint((x, y)): continue
+
+				surf.set_at((x, y), paint_colour)
 
 	updateDisplay()
-	ticks += clock.tick(fps)
+	frame_time = clock.tick(fps)
+
+	if playing:
+
+		ticks += frame_time
+		ticks %= len(frames) * 1000 // play_fps
+
+		# prev_frame = curr_frame
+		curr_frame = ticks * play_fps // 1000
