@@ -18,6 +18,13 @@ def delete_curr_frame(frames, curr_frame) -> 'new_frame':
 	'''
 	return delete_frame(frames, curr_frame, curr_frame)
 
+@Mode.frame_direct.attach
+def delete_frame(frames, frame, curr_frame) -> 'new_frame':
+	if len(frames) == 1: return curr_frame  # don't crash on exceptional case, maintain len(frame) >= 1
+
+	frames.pop(frame)
+	return min(len(frames)-1, curr_frame)
+
 @Mode.frame_dest.attach
 def move_frame(frames: list[Surface], dst, src):
 	frames.insert(dst, frames.pop(src))

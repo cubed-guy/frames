@@ -21,3 +21,4 @@ class Mode(AttachedEnum):
 	# tool modes
 	# attach these to functions to annotate required function signature
 	frame_dest = auto()  # (&mut frames, dst_frame, src_frame) -> None
+	frame_direct = auto()  # (&mut frames, target_frame, curr_frame) -> new_frame  # applies directly if there is already a selection

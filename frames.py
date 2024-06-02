@@ -4,7 +4,7 @@
 # DONE: view
 # DONE: scroll and zoom
 # DONE: paint - pick colour, type hex
-# TODO: frames
+# DONE: frames
 # TODO: views
 # TODO: select
 # TODO: text?
@@ -246,8 +246,9 @@ while running:
 					text += event.unicode
 
 			elif event.key == K_ESCAPE:
+				# TODO: Separate keybinds for paint mode and deselection
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
-					show_selection = not show_selection
+					show_selection = False  # shift+s to show
 
 				elif curr_mode is not Mode.paint:
 					curr_mode = Mode.paint
@@ -257,7 +258,7 @@ while running:
 			elif event.key == K_c: curr_mode = Mode.type_colour  # c for colour
 			elif event.key == K_s:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
-					show_selection = True
+					show_selection = True  # shift+esc to hide
 				else:
 					curr_mode = Mode.frame_select  # s for select
 			elif event.key == K_SPACE: playing = not playing
@@ -267,16 +268,33 @@ while running:
 			elif event.key in (K_HOME, K_KP7): set_frame(0); playing = False
 			elif event.key in (K_END, K_KP1): set_frame(-1); playing = False
 
-
+			
 			# TOOLS!
 
 			# Instant tools (act directly on current state)
 			elif event.key == K_n:  # Instant tools need not be too ergonomic
 				set_frame(tools.new_frame(frames, curr_frame))
+			elif event.key == K_k:
+				set_frame(tools.delete_curr_frame(frames, curr_frame))
+
+			# Direct/semi-modal tools (go to selection mode if no selection)
+			elif event.key == K_x:
+				# TODO: `handle_mode[mode].segment_i(...)` idk
+				if selected_frame is None or not show_selection:
+					curr_tool = tools.delete_frame
+					curr_mode = Mode.frame_select  # for Mode.frame_direct
+				else:
+					set_frame(
+						tools.delete_frame(frames, selected_frame, curr_frame)
+					)
 
 			# Modal tools (go to custom mode for more selections)
 			elif event.key == K_g:
 				curr_tool = tools.move_frame
+				curr_mode = Mode.attached[curr_tool]
+
+			elif event.key == K_d:
+				curr_tool = tools.copy_frame
 				curr_mode = Mode.attached[curr_tool]
 
 		elif event.type == VIDEORESIZE:
@@ -362,16 +380,13 @@ while running:
 					set_frame(hovered_frame)
 					drag_mode = DragMode.default
 
-					# mode is frame_dest, drag_mode is frame
-					# apply on mouse up
-					# if we enter frame_select mode, end of frame_select should set mode back to frame_dest
-
 				else:
 					updateStat(f'Unsupported mode {curr_mode} for mouse down')
 
 		elif event.type == MOUSEBUTTONUP:
 			if event.button == 3:
 				drag_mode = DragMode.none
+
 			elif event.button == 1:
 				print('MOUSEUP ON FRAME', hovered_frame, curr_mode, drag_mode)
 				if curr_tool is None:
@@ -379,6 +394,12 @@ while running:
 
 				elif curr_mode is Mode.frame_select:
 					curr_mode = Mode.attached[curr_tool]
+
+					if curr_mode is Mode.frame_direct:
+						set_frame(curr_tool(frames, selected_frame, curr_frame))
+						curr_tool = None
+						curr_mode = Mode.paint
+						show_selection = False
 
 				# Applies the tool on mouse up. TODO: preview
 				elif curr_mode is Mode.frame_dest:
@@ -391,6 +412,7 @@ while running:
 					updateStat('Unknown frame mode')
 
 				drag_mode = DragMode.none
+
 		elif event.type == MOUSEMOTION:
 			if drag_mode is DragMode.none:
 				hovered_frame = None
