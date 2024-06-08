@@ -5,8 +5,8 @@
 # DONE: scroll and zoom
 # DONE: paint - pick colour, type hex
 # DONE: frames
-# TODO: views
 # TODO: select
+# TODO: views
 # TODO: text?
 
 from os import environ
@@ -15,7 +15,7 @@ environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
 from os.path import expanduser
 import numpy as np
 import tools
-from utils import Mode
+from utils import Mode, Region
 
 from enum import Enum, auto
 import pygame
@@ -30,6 +30,8 @@ c = type('c', (), {'__matmul__': lambda s, x: (*x.to_bytes(3, 'big'),), '__sub__
 bg = c-34
 fg = c@0xff9088
 green = c@0xa0ffe0
+yellow = c@0xffffe0
+black = c-0
 SH = 20
 
 fps = 60
@@ -91,6 +93,8 @@ def updateDisplay():
 		(-scroll[0], -scroll[1]), (obj_space_w, obj_space_h)
 	).clip(surf.get_rect())
 	if crop_rect:
+		# TODO: show selection region rect (yellow inside, black outside)
+
 		cropped_surf = surf.subsurface(crop_rect)
 
 		view_w = crop_rect.width  / zoom
@@ -101,6 +105,21 @@ def updateDisplay():
 		# transform that to screen space
 		x, y = to_screen_space(*crop_rect.topleft)
 		display.blit(scaled_surf, (x + DEBUG_PAD, y + DEBUG_PAD))
+
+		if show_selection and selected_region:
+			region = selected_region.reorganised()
+
+			# crop the region
+			x1, y1 = to_screen_space(*region._start)
+
+			x2, y2 = region._end
+			x2, y2 = to_screen_space(x2+1, y2+1)
+
+			sel_w, sel_h = x2-x1, y2-y1
+
+			rect = pygame.Rect(x1, y1, sel_w, sel_h).clip(display.get_rect())
+			pygame.draw.rect(display, black, rect.inflate(2, 2), width=1)
+			pygame.draw.rect(display, yellow, rect.inflate(4, 4), width=1)
 	
 	frame_panel_surf = render_frame_panel()
 	display.blit(frame_panel_surf, (0, h - SH - frame_panel_h))
@@ -180,6 +199,25 @@ def set_frame(frame):
 	curr_frame = frame % len(frames)
 	ticks = curr_frame * 1000 // play_fps
 
+def start_selection(pos):
+	global selected_region, drag_mode, selected_frame, show_selection
+
+	x, y = from_screen_space(pos)
+	x, y = int(x), int(y)
+
+	surf = frames[curr_frame]
+	if not surf.get_rect().collidepoint((x, y)):
+		print('Rect start out of bounds')
+		return
+
+	drag_mode = DragMode.default
+	show_selection = True
+	selected_frame = curr_frame
+
+	selected_region = Region((x, y), (x, y))
+	print('Rectangle starting from', selected_region._start)
+
+
 valid_chars = {
 	Mode.type_colour: set('0123456789abcdefABCDEF'),
 }
@@ -210,6 +248,7 @@ frames: list[pygame.Surface] = [surf.copy() for i in range(16)]
 curr_frame = 0
 hovered_frame  = None  # For highlight
 selected_frame = None  # TODO: frame range
+selected_region = None
 show_selection = False
 text = f'{int.from_bytes(paint_colour, "big"):06x}'
 
@@ -255,12 +294,21 @@ while running:
 
 				else:
 					running = False
-			elif event.key == K_c: curr_mode = Mode.type_colour  # c for colour
+			elif event.key == K_c: # c for colour
+				curr_mode = Mode.type_colour
+				curr_tool = None
 			elif event.key == K_s:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
 					show_selection = True  # shift+esc to hide
 				else:
 					curr_mode = Mode.frame_select  # s for select
+				curr_tool = None
+			elif event.key == K_b:
+				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
+					show_selection = True  # shift+esc to hide
+				else:
+					curr_mode = Mode.pixel_select  # b for box
+				curr_tool = None
 			elif event.key == K_SPACE: playing = not playing
 
 			elif event.key == K_LEFT:  set_frame(curr_frame-1); playing = False
@@ -294,8 +342,15 @@ while running:
 				curr_mode = Mode.attached[curr_tool]
 
 			elif event.key == K_d:
-				curr_tool = tools.copy_frame
-				curr_mode = Mode.attached[curr_tool]
+				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
+					curr_tool = tools.copy_frame
+					curr_mode = Mode.attached[curr_tool]
+				else:
+					curr_tool = tools.copy_region
+					if selected_region is None or not show_selection:
+						curr_mode = Mode.pixel_select
+					else:
+						curr_mode = Mode.attached[curr_tool]
 
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)
@@ -361,13 +416,15 @@ while running:
 						surf.set_at((x, y), paint_colour)
 
 				elif curr_mode == Mode.frame_select:
-					if hovered_frame is None:
-						# TODO: Cubical/rectangular selection logic
-						continue
-					elif hovered_frame in range(len(frames)):
+					if hovered_frame in range(len(frames)):
 						show_selection = True
 						selected_frame = hovered_frame
 						print('Selected', selected_frame)
+
+				elif curr_mode == Mode.pixel_select:
+					if hovered_frame is None: start_selection(event.pos)
+					elif hovered_frame in range(len(frames)):
+						set_frame(hovered_frame)
 
 				elif curr_mode == Mode.frame_dest:
 					if hovered_frame not in range(len(frames)): continue
@@ -380,6 +437,16 @@ while running:
 					set_frame(hovered_frame)
 					drag_mode = DragMode.default
 
+				elif curr_mode == Mode.pixel_dest:
+					if hovered_frame is not None: continue
+
+					if not show_selection or selected_frame is None:
+						show_selection = True
+						start_selection(event.pos)
+						print('Selected', selected_frame)
+
+					drag_mode = DragMode.default
+
 				else:
 					updateStat(f'Unsupported mode {curr_mode} for mouse down')
 
@@ -389,8 +456,16 @@ while running:
 
 			elif event.button == 1:
 				print('MOUSEUP ON FRAME', hovered_frame, curr_mode, drag_mode)
+
 				if curr_tool is None:
-					curr_mode = Mode.paint
+					# If the mode is frame_select or pixel_select,
+					# the selection has been done already.
+					# No need to do anything here
+					if curr_mode is not Mode.pixel_select or selected_region:
+						if curr_mode is Mode.pixel_select:
+							print(selected_region)
+						curr_mode = Mode.paint
+					# else, pixel_selection is not yet complete; do nothing
 
 				elif curr_mode is Mode.frame_select:
 					curr_mode = Mode.attached[curr_tool]
@@ -401,6 +476,16 @@ while running:
 						curr_mode = Mode.paint
 						show_selection = False
 
+				elif curr_mode is Mode.pixel_select:
+					curr_mode = Mode.attached[curr_tool]
+					# print('selected region:', selected_region)
+
+					# if curr_mode is Mode.pixel_direct:
+					# 	curr_tool(surf, selected_region.reorganised())
+					# 	curr_tool = None
+					# 	curr_mode = Mode.paint
+					# 	show_selection = False
+
 				# Applies the tool on mouse up. TODO: preview
 				elif curr_mode is Mode.frame_dest:
 					if hovered_frame not in range(len(frames)): continue
@@ -408,6 +493,28 @@ while running:
 					curr_tool(frames, hovered_frame, selected_frame)
 					curr_tool = None
 					show_selection = False
+
+				elif curr_mode is Mode.pixel_dest:
+					print('Pixel dest')
+
+					pixel = from_screen_space(event.pos)
+					# # copy_region() can handle out of bounds dest
+					# if not frames[curr_frame].get_rect().collidepoint(pixel):
+					# 	continue
+
+					# Region should contain frame?
+					curr_tool(
+						frames,
+						curr_frame,
+						pixel,
+						selected_frame,
+						selected_region.as_rect(),
+					)
+
+					curr_tool = None
+					show_selection = False
+					curr_mode = Mode.paint
+
 				else:
 					updateStat('Unknown frame mode')
 
@@ -417,10 +524,7 @@ while running:
 			if drag_mode is DragMode.none:
 				hovered_frame = None
 
-				if event.pos[1] < h-SH - frame_panel_h:
-					# TODO: Cubical/rectangular selection logic
-					continue
-				else:
+				if event.pos[1] >= h-SH - frame_panel_h:
 					hovered_frame = int(frame_from_screen_space(event.pos[0]))
 
 			elif drag_mode is DragMode.scrolling:
@@ -438,6 +542,19 @@ while running:
 					if not surf.get_rect().collidepoint((x, y)): continue
 
 					surf.set_at((x, y), paint_colour)
+
+				elif curr_mode is Mode.pixel_select:
+					x, y = from_screen_space(event.pos)
+					x, y = int(x), int(y)
+
+					surf = frames[curr_frame]
+					if not surf.get_rect().collidepoint((x, y)): continue
+
+					selected_region.set_end((x, y))
+
+				elif curr_mode is Mode.pixel_dest:
+					# do nothing
+					pass
 
 				else:  # frame select, frame dest etc.
 					hovered_frame = int(frame_from_screen_space(event.pos[0]))

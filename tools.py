@@ -32,3 +32,12 @@ def move_frame(frames: list[Surface], dst, src):
 @Mode.frame_dest.attach
 def copy_frame(frames: list[Surface], dst, src):
 	frames.insert(dst, frames[src].copy())
+
+@Mode.pixel_dest.attach
+def copy_region(frames, dst_frame, dst_pixel, src_frame, rect):
+	print(frames[src_frame], 'subsurf', rect)
+	# subsurf = frames[src_frame].subsurface(rect)
+
+	dst_surf = frames[dst_frame]
+	# print(f'{dst_surf.get_locked() = } {subsurf.get_locked() = }')
+	dst_surf.blit(frames[src_frame], dst_pixel, area=rect)
