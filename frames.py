@@ -352,6 +352,15 @@ while running:
 					else:
 						curr_mode = Mode.attached[curr_tool]
 
+			elif event.key == K_f: # region direct tool
+				if selected_region is None or not show_selection:
+					curr_tool = tools.fill
+					curr_mode = Mode.pixel_select  # for Mode.frame_direct
+				else:
+					tools.fill(
+						frames[curr_frame], paint_colour, selected_region
+					)
+
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)
 		elif event.type == QUIT: running = False
@@ -480,11 +489,18 @@ while running:
 					curr_mode = Mode.attached[curr_tool]
 					# print('selected region:', selected_region)
 
-					# if curr_mode is Mode.pixel_direct:
-					# 	curr_tool(surf, selected_region.reorganised())
-					# 	curr_tool = None
-					# 	curr_mode = Mode.paint
-					# 	show_selection = False
+					if curr_mode is Mode.region_direct:
+						curr_tool(surf, selected_region)
+						curr_tool = None
+						curr_mode = Mode.paint
+						show_selection = False
+					elif curr_mode is Mode.fill:
+						curr_tool(
+							frames[curr_frame], paint_colour, selected_region
+						)
+						curr_tool = None
+						curr_mode = Mode.paint
+						show_selection = False
 
 				# Applies the tool on mouse up. TODO: preview
 				elif curr_mode is Mode.frame_dest:

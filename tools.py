@@ -1,5 +1,5 @@
 from pygame import Surface
-from utils import Mode
+from utils import Mode, Region
 
 # No attachment because it doesn't invoke a separate mode.
 # But maybe we should, just to enforce the signature.
@@ -41,3 +41,7 @@ def copy_region(frames, dst_frame, dst_pixel, src_frame, rect):
 	dst_surf = frames[dst_frame]
 	# print(f'{dst_surf.get_locked() = } {subsurf.get_locked() = }')
 	dst_surf.blit(frames[src_frame], dst_pixel, area=rect)
+
+@Mode.fill.attach
+def fill(surf, colour, region: Region):
+	surf.fill(colour, region.as_rect())
