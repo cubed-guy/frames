@@ -46,3 +46,7 @@ def copy_region(frames, dst_frame, dst_pixel, src_frame, rect):
 @Mode.fill.attach
 def fill(surf, colour, region: Region):
 	surf.fill(colour, region.as_rect())
+
+@Mode.fill.attach
+def ellipse(surf, colour, region: Region):
+	pygame.draw.ellipse(surf, colour, region.as_rect())

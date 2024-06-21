@@ -365,6 +365,16 @@ while running:
 						frames[curr_frame], paint_colour, selected_region
 					)
 
+			elif event.key == K_e: # region direct tool
+				if selected_region is None or not show_selection:
+					curr_tool = tools.ellipse
+					curr_mode = Mode.attached[curr_tool]
+					drag_mode = DragMode.pixel_region_select
+				else:
+					tools.ellipse(
+						frames[curr_frame], paint_colour, selected_region
+					)
+
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)
 		elif event.type == QUIT: running = False
