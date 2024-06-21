@@ -5,9 +5,10 @@
 # DONE: scroll and zoom
 # DONE: paint - pick colour, type hex
 # DONE: frames
-# TODO: select
+# DONE: select
 # TODO: views
 # TODO: text?
+# TODO: multiarg tool support
 
 from os import environ
 environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
@@ -155,7 +156,10 @@ def frame_to_screen_space(x):
 class DragMode(Enum):
 	none = auto()
 	scrolling = auto()
-	default = auto()    # default drag mode for either frame panel or viewport
+	default = auto()  # default drag mode for either frame panel or viewport
+	scrub = auto()  # used to select current frame
+	pixel_region_select = auto()  # while making a selection
+	# frame_region_select = auto()
 
 def render_frame_panel():
 	global frame_panel_h, curr_frame, frame_scroll, hovered_frame, selected_frame
@@ -207,15 +211,15 @@ def start_selection(pos):
 
 	surf = frames[curr_frame]
 	if not surf.get_rect().collidepoint((x, y)):
-		print('Rect start out of bounds')
+		# print('Rect start out of bounds')
 		return
 
-	drag_mode = DragMode.default
+	drag_mode = DragMode.pixel_region_select
 	show_selection = True
 	selected_frame = curr_frame
 
 	selected_region = Region((x, y), (x, y))
-	print('Rectangle starting from', selected_region._start)
+	# print('Rectangle starting from', selected_region._start)
 
 
 valid_chars = {
@@ -307,7 +311,7 @@ while running:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
 					show_selection = True  # shift+esc to hide
 				else:
-					curr_mode = Mode.pixel_select  # b for box
+					curr_mode = Mode.pixel_region_select  # b for box
 				curr_tool = None
 			elif event.key == K_SPACE: playing = not playing
 
@@ -330,7 +334,7 @@ while running:
 				# TODO: `handle_mode[mode].segment_i(...)` idk
 				if selected_frame is None or not show_selection:
 					curr_tool = tools.delete_frame
-					curr_mode = Mode.frame_select  # for Mode.frame_direct
+					curr_mode = Mode.attached[curr_tool]
 				else:
 					set_frame(
 						tools.delete_frame(frames, selected_frame, curr_frame)
@@ -347,15 +351,15 @@ while running:
 					curr_mode = Mode.attached[curr_tool]
 				else:
 					curr_tool = tools.copy_region
+					curr_mode = Mode.attached[curr_tool]
 					if selected_region is None or not show_selection:
-						curr_mode = Mode.pixel_select
-					else:
-						curr_mode = Mode.attached[curr_tool]
+						drag_mode = DragMode.pixel_region_select
 
 			elif event.key == K_f: # region direct tool
 				if selected_region is None or not show_selection:
 					curr_tool = tools.fill
-					curr_mode = Mode.pixel_select  # for Mode.frame_direct
+					curr_mode = Mode.attached[curr_tool]
+					drag_mode = DragMode.pixel_region_select
 				else:
 					tools.fill(
 						frames[curr_frame], paint_colour, selected_region
@@ -397,16 +401,20 @@ while running:
 
 			elif event.button == 1:
 				print('MOUSEDOWN  FRAME', hovered_frame, curr_mode, drag_mode)
-				if curr_mode == Mode.paint:
+
+				mods = pygame.key.get_mods()
+				if mods & (KMOD_LALT|KMOD_RALT):
+					if hovered_frame is not None: continue  # mouse on panel
+					paint_colour = surf.get_at((x, y))
+					text = f'{int.from_bytes(paint_colour, "big"):06x}'
+
+				elif curr_mode == Mode.paint:
 					if hovered_frame in range(len(frames)):  # wrap-around would be weird
 						set_frame(hovered_frame)
-						curr_mode = Mode.frame_select
-						drag_mode = DragMode.default
+						drag_mode = DragMode.scrub
 						continue
 
-					if hovered_frame is not None:
-						# Mouse is in frame panel. TODO: A better way.
-						continue
+					if hovered_frame is not None: continue  # mouse on panel
 
 					x, y = from_screen_space(event.pos)
 					x, y = int(x), int(y)
@@ -414,103 +422,99 @@ while running:
 					surf = frames[curr_frame]
 					if not surf.get_rect().collidepoint((x, y)): continue
 
-					mods = pygame.key.get_mods()
-					if mods & (KMOD_LALT|KMOD_RALT):
-						paint_colour = surf.get_at((x, y))
-						text = f'{int.from_bytes(paint_colour, "big"):06x}'
-						# text = f'{paint_colour:06x}'
-					else:
-						drag_mode = DragMode.default
+					drag_mode = DragMode.default
 
-						surf.set_at((x, y), paint_colour)
+					surf.set_at((x, y), paint_colour)
 
 				elif curr_mode == Mode.frame_select:
 					if hovered_frame in range(len(frames)):
 						show_selection = True
 						selected_frame = hovered_frame
-						print('Selected', selected_frame)
-
-				elif curr_mode == Mode.pixel_select:
-					if hovered_frame is None: start_selection(event.pos)
-					elif hovered_frame in range(len(frames)):
-						set_frame(hovered_frame)
+						# don't start scrub because we need selection not view
 
 				elif curr_mode == Mode.frame_dest:
 					if hovered_frame not in range(len(frames)): continue
 
 					if not show_selection or selected_frame is None:
 						show_selection = True
-						selected_frame = hovered_frame
-						print('Selected', selected_frame)
+						selected_frame = hovered_frame  # simulates click-drag
 
 					set_frame(hovered_frame)
-					drag_mode = DragMode.default
+					drag_mode = DragMode.scrub
+
+				elif curr_mode == Mode.pixel_region_select:
+					if hovered_frame is not None:
+						if hovered_frame in range(len(frames)):
+							drag_mode = DragMode.scrub
+							set_frame(hovered_frame)
+
+					else:
+						show_selection = True
+						selected_frame = curr_frame
+						start_selection(event.pos)
 
 				elif curr_mode == Mode.pixel_dest:
-					if hovered_frame is not None: continue
+					if hovered_frame is not None:
+						if hovered_frame in range(len(frames)):
+							drag_mode = DragMode.scrub
+							set_frame(hovered_frame)
 
-					if not show_selection or selected_frame is None:
+					elif not show_selection or selected_frame is None:
 						show_selection = True
+						selected_frame = curr_frame
 						start_selection(event.pos)
-						print('Selected', selected_frame)
 
-					drag_mode = DragMode.default
+					else:
+						drag_mode = DragMode.default  # apply on mouse up
 
 				else:
 					updateStat(f'Unsupported mode {curr_mode} for mouse down')
 
 		elif event.type == MOUSEBUTTONUP:
 			if event.button == 3:
-				drag_mode = DragMode.none
+				if drag_mode is DragMode.scrolling:
+					drag_mode = DragMode.none
 
 			elif event.button == 1:
 				print('MOUSEUP ON FRAME', hovered_frame, curr_mode, drag_mode)
 
+				# No tool
+
 				if curr_tool is None:
-					# If the mode is frame_select or pixel_select,
-					# the selection has been done already.
-					# No need to do anything here
-					if curr_mode is not Mode.pixel_select or selected_region:
-						if curr_mode is Mode.pixel_select:
-							print(selected_region)
-						curr_mode = Mode.paint
-					# else, pixel_selection is not yet complete; do nothing
+					# paint, type_colour, frame_select, pixel_region_select
+					# drag_mode can be scrub in pixel_region_select mode
+					if drag_mode is not DragMode.scrub: curr_mode = Mode.paint
+					drag_mode = DragMode.none
+					continue
 
-				elif curr_mode is Mode.frame_select:
-					curr_mode = Mode.attached[curr_tool]
+				# Direct tools (already applied, or applied on mouse up)
 
-					if curr_mode is Mode.frame_direct:
-						set_frame(curr_tool(frames, selected_frame, curr_frame))
-						curr_tool = None
-						curr_mode = Mode.paint
-						show_selection = False
+				elif curr_mode is Mode.frame_direct:
+					set_frame(curr_tool(frames, selected_frame, curr_frame))
 
-				elif curr_mode is Mode.pixel_select:
-					curr_mode = Mode.attached[curr_tool]
-					# print('selected region:', selected_region)
+				elif curr_mode is Mode.region_direct:
+					curr_tool(surf, selected_region)
 
-					if curr_mode is Mode.region_direct:
-						curr_tool(surf, selected_region)
-						curr_tool = None
-						curr_mode = Mode.paint
-						show_selection = False
-					elif curr_mode is Mode.fill:
-						curr_tool(
-							frames[curr_frame], paint_colour, selected_region
-						)
-						curr_tool = None
-						curr_mode = Mode.paint
-						show_selection = False
+				elif curr_mode is Mode.fill:
+					curr_tool(
+						frames[curr_frame], paint_colour, selected_region
+					)
 
-				# Applies the tool on mouse up. TODO: preview
+				# Fully modal tools. Apply the tool on mouse up. TODO: preview
+
 				elif curr_mode is Mode.frame_dest:
-					if hovered_frame not in range(len(frames)): continue
+					if drag_mode is not DragMode.scrub: continue
+
 					print(curr_tool, hovered_frame, selected_frame)
 					curr_tool(frames, hovered_frame, selected_frame)
-					curr_tool = None
-					show_selection = False
 
 				elif curr_mode is Mode.pixel_dest:
+					if drag_mode in (
+						DragMode.pixel_region_select, DragMode.scrub
+					):
+						drag_mode = DragMode.none
+						continue  # keep selection
+
 					print('Pixel dest')
 
 					pixel = from_screen_space(event.pos)
@@ -527,13 +531,12 @@ while running:
 						selected_region.as_rect(),
 					)
 
-					curr_tool = None
-					show_selection = False
-					curr_mode = Mode.paint
-
 				else:
-					updateStat('Unknown frame mode')
+					updateStat('Unknown mode')
 
+				curr_tool = None
+				curr_mode = Mode.paint
+				show_selection = False
 				drag_mode = DragMode.none
 
 		elif event.type == MOUSEMOTION:
@@ -543,38 +546,31 @@ while running:
 				if event.pos[1] >= h-SH - frame_panel_h:
 					hovered_frame = int(frame_from_screen_space(event.pos[0]))
 
+			elif drag_mode is DragMode.scrub:
+				hovered_frame = int(frame_from_screen_space(event.pos[0]))
+				if hovered_frame in range(len(frames)): set_frame(hovered_frame)
+
+			elif drag_mode is DragMode.pixel_region_select:
+				x, y = from_screen_space(event.pos)
+				x, y = int(x), int(y)
+
+				surf = frames[curr_frame]
+				if not surf.get_rect().collidepoint((x, y)): continue
+
+				selected_region.set_end((x, y))
+
 			elif drag_mode is DragMode.scrolling:
 				scroll[0] += event.rel[0] * zoom
 				scroll[1] += event.rel[1] * zoom
 
-			elif drag_mode is DragMode.default:  # behaviours depends on mode
-				# TODO: autoscroll
+			elif curr_mode is Mode.paint:
+				x, y = from_screen_space(event.pos)
+				x, y = int(x), int(y)
 
-				if curr_mode is Mode.paint:
-					x, y = from_screen_space(event.pos)
-					x, y = int(x), int(y)
+				surf = frames[curr_frame]
+				if not surf.get_rect().collidepoint((x, y)): continue
 
-					surf = frames[curr_frame]
-					if not surf.get_rect().collidepoint((x, y)): continue
-
-					surf.set_at((x, y), paint_colour)
-
-				elif curr_mode is Mode.pixel_select:
-					x, y = from_screen_space(event.pos)
-					x, y = int(x), int(y)
-
-					surf = frames[curr_frame]
-					if not surf.get_rect().collidepoint((x, y)): continue
-
-					selected_region.set_end((x, y))
-
-				elif curr_mode is Mode.pixel_dest:
-					# do nothing
-					pass
-
-				else:  # frame select, frame dest etc.
-					hovered_frame = int(frame_from_screen_space(event.pos[0]))
-					if hovered_frame in range(len(frames)): set_frame(hovered_frame)
+				surf.set_at((x, y), paint_colour)
 
 	updateDisplay()
 	frame_time = clock.tick(fps)

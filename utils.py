@@ -16,8 +16,8 @@ class AttachedEnum(Enum):
 class Mode(AttachedEnum):
 	paint = auto()
 	type_colour = auto()
-	frame_select = auto()
-	pixel_select = auto()
+	frame_select = auto()  # click to only set selected but not current
+	pixel_region_select = auto()
 
 	# tool modes
 	# attach these to functions to annotate required function signature

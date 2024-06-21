@@ -1,5 +1,6 @@
 from pygame import Surface
 from utils import Mode, Region
+import pygame.draw
 
 # No attachment because it doesn't invoke a separate mode.
 # But maybe we should, just to enforce the signature.
