@@ -6,21 +6,36 @@
 # DONE: paint - pick colour, type hex
 # DONE: frames
 # DONE: select
-# TODO: views
+# DONE: views
+# TODO: lru_indirection
+# TODO: multiclip support, new clip from selection
+# TODO: new clip from clipboard
 # TODO: text?
 # TODO: multiarg tool support
+# TODO: new blank clip (requires multiargs for dimensions)
+# TODO: preview
+# TODO: layouts
 
 from os import environ
 environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
 
+from typing import Union
 from os.path import expanduser
 import numpy as np
+from utils import DragMode, Mode, Region, RegionIdent, FrameIdent
+from views import View, Clip, Session
 import tools
-from utils import Mode, Region
 
-from enum import Enum, auto
 import pygame
-from pygame.locals import *
+from pygame import (
+	KEYDOWN, KEYUP, QUIT, VIDEORESIZE,
+	MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION, MOUSEWHEEL,
+	KMOD_LALT, KMOD_LCTRL, KMOD_LSHIFT, KMOD_RALT, KMOD_RCTRL, KMOD_RSHIFT,
+	K_BACKSPACE, K_END, K_ESCAPE, K_TAB, K_F11, K_HOME, K_KP1, K_KP7, K_F4,
+	K_LEFT, K_RETURN, K_RIGHT, K_SPACE, K_LCTRL, K_RCTRL, K_BACKSLASH, K_SLASH,
+	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_s, K_x,
+	RESIZABLE, FULLSCREEN,
+)
 pygame.font.init()
 font_path = expanduser('~/Code/Product Sans Regular.ttf')
 font  = pygame.font.Font(font_path, 16)
@@ -36,30 +51,15 @@ black = c-0
 SH = 20
 
 fps = 60
-play_fps = 24
 
-DEBUG_PAD = 0
 ZOOM_FAC = 0.8
 MIN_ZOOM = 0.002
-FRAME_WIDTH = 16
 
 w, h = res = (1280, 720)
-
-PAINT_STAT  = c@0x800080
-COLOUR_STAT = c-0
-SELECT_STAT = c--1
-FRAME_STAT = c@0x800000
-UNKNOWN_STAT = c@0xff00ff
 
 def updateStat(msg, update = True):
 	# call this if you have a long loop that'll taking too long
 	rect = (0, h-SH, w, 21)
-
-	# if   curr_mode is Mode.paint: col = PAINT_STAT
-	# elif curr_mode is Mode.type_colour: col = COLOUR_STAT
-	# elif curr_mode is Mode.frame_select: col = SELECT_STAT
-	# elif curr_mode is Mode.frame_dest: col = FRAME_STAT
-	# else: col = UNKNOWN_STAT
 
 	display.fill(c-0, rect)
 
@@ -68,6 +68,7 @@ def updateStat(msg, update = True):
 
 	if update: pygame.display.update(rect)
 
+display: Union[pygame.Surface, pygame.surface.Surface]  # A single annotation can't hurt
 def resize(size):
 	global w, h, res, display
 	w, h = res = size
@@ -75,57 +76,18 @@ def resize(size):
 	updateDisplay()
 
 def updateDisplay():
-	display.fill(bg)
+	if session.show_selection: selection = session.selection
+	else: selection = None
+	view_surf = curr_view.render(w, h, selection, session.hover)
 
-	# display.fill(green, (DEBUG_PAD, DEBUG_PAD, w-DEBUG_PAD*2, h-SH-DEBUG_PAD*2))
+	display.blit(view_surf, (0, 0))  # TODO: Use layout
 
-	# scale, first subsurf
-
-	# represents the subsection of the frame to show
-	# doesn't need to be precise, only for profromance
-	# this is how big the screen is wrt obj space
-	obj_space_w = (w - DEBUG_PAD*2) * zoom + 2
-	obj_space_h = (h - SH - DEBUG_PAD*2) * zoom + 2
-
-	surf = frames[curr_frame]
-
-	# still in obj space
-	crop_rect = pygame.Rect(
-		(-scroll[0], -scroll[1]), (obj_space_w, obj_space_h)
-	).clip(surf.get_rect())
-	if crop_rect:
-		# TODO: show selection region rect (yellow inside, black outside)
-
-		cropped_surf = surf.subsurface(crop_rect)
-
-		view_w = crop_rect.width  / zoom
-		view_h = crop_rect.height / zoom
-		scaled_surf = pygame.transform.scale(cropped_surf, (view_w, view_h))
-
-		# so in obj space, the cropped_surf is at crop_rect.topleft
-		# transform that to screen space
-		x, y = to_screen_space(*crop_rect.topleft)
-		display.blit(scaled_surf, (x + DEBUG_PAD, y + DEBUG_PAD))
-
-		if show_selection and selected_region:
-			region = selected_region.reorganised()
-
-			# crop the region
-			x1, y1 = to_screen_space(*region._start)
-
-			x2, y2 = region._end
-			x2, y2 = to_screen_space(x2+1, y2+1)
-
-			sel_w, sel_h = x2-x1, y2-y1
-
-			rect = pygame.Rect(x1, y1, sel_w, sel_h).clip(display.get_rect())
-			pygame.draw.rect(display, black, rect.inflate(2, 2), width=1)
-			pygame.draw.rect(display, yellow, rect.inflate(4, 4), width=1)
-	
-	frame_panel_surf = render_frame_panel()
-	display.blit(frame_panel_surf, (0, h - SH - frame_panel_h))
-
-	updateStat(f'{curr_mode}, {drag_mode}, #{text[-6:]}', update = False)
+	updateStat(
+		f'{lru_idx} of {len(session.views)} -> {curr_view} '
+		f'in {session.curr_mode} and {session.drag_mode}, '
+		f'text: {session.text}',
+		update = False,
+	)
 	pygame.display.flip()
 
 def toggleFullscreen():
@@ -135,91 +97,24 @@ def toggleFullscreen():
 	if display.get_flags()&FULLSCREEN: resize(res)
 	else: display = pygame.display.set_mode(res, FULLSCREEN); updateDisplay()
 
-def from_screen_space(pos):
-	x = pos[0] * zoom - scroll[0]
-	y = pos[1] * zoom - scroll[1]
-	return x, y
-
-def to_screen_space(x, y):
-	return (x + scroll[0]) / zoom, (y + scroll[1]) / zoom
-
-def frame_from_screen_space(x):
-	global frame_scroll
-
-	return (x - frame_scroll) / FRAME_WIDTH
-
-def frame_to_screen_space(x):
-	global frame_scroll
-
-	return x * FRAME_WIDTH + frame_scroll
-
-class DragMode(Enum):
-	none = auto()
-	scrolling = auto()
-	default = auto()  # default drag mode for either frame panel or viewport
-	scrub = auto()  # used to select current frame
-	pixel_region_select = auto()  # while making a selection
-	# frame_region_select = auto()
-
-def render_frame_panel():
-	global frame_panel_h, curr_frame, frame_scroll, hovered_frame, selected_frame
-
-	out = pygame.Surface((w, frame_panel_h), SRCALPHA)
-
-	if playing:
-		col = green
-	else:
-		col = c-192
-
-	out.fill((*c-0, 230))
-
-	valid_frames_rect = pygame.Rect(frame_to_screen_space(0), 0, len(frames) * FRAME_WIDTH, frame_panel_h)
-	out.fill((*c-27, 230), valid_frames_rect.clip(out.get_rect()))
-
-	if hovered_frame in range(len(frames)):  # NOTE: Also acts as a None-check
-		# NOTE: Redundant, we should just calculate this directly
-		# But then, we don't get the perfect x coord. Therefore, this is actually kinda ok.
-		x = frame_to_screen_space(hovered_frame)
-		out.fill(c-50, (x, 0, FRAME_WIDTH, frame_panel_h))
-
-	if show_selection and selected_frame in range(len(frames)):  # NOTE: Also acts as a None-check
-		# NOTE: Redundant, we should just calculate this directly
-		# But then, we don't get the perfect x coord. Therefore, this is actually kinda ok.
-		x = frame_to_screen_space(selected_frame)
-		out.fill(c-192, (x, 0, FRAME_WIDTH, frame_panel_h))
-
-	x = frame_to_screen_space(curr_frame)
-
-	out.fill(col, (x, 0, 1, frame_panel_h))
-
-	frame_n_surface = font.render(f'{curr_frame}', True, col)
-	out.blit(frame_n_surface, (x, 0))
-
-	return out
-
-def set_frame(frame):
-	global ticks, curr_frame
-
-	curr_frame = frame % len(frames)
-	ticks = curr_frame * 1000 // play_fps
-
 def start_selection(pos):
-	global selected_region, drag_mode, selected_frame, show_selection
+	# TODO: move this to Session
 
-	x, y = from_screen_space(pos)
+	x, y = curr_view.from_screen_space(pos)
 	x, y = int(x), int(y)
 
-	surf = frames[curr_frame]
+	surf = curr_view.curr_surf()
 	if not surf.get_rect().collidepoint((x, y)):
 		# print('Rect start out of bounds')
 		return
 
-	drag_mode = DragMode.pixel_region_select
-	show_selection = True
-	selected_frame = curr_frame
+	session.drag_mode = DragMode.pixel_region_select
+	session.show_selection = True
 
-	selected_region = Region((x, y), (x, y))
-	# print('Rectangle starting from', selected_region._start)
+	region = Region((x, y), (x, y))
+	session.selection = RegionIdent(curr_view.clip, curr_view.curr_frame, region)
+
+	# print('Rectangle starting from', session.selection.region._start)
 
 
 valid_chars = {
@@ -236,25 +131,25 @@ surf = pygame.image.load('berries.jpg')
 # access the surface from array rather than the other way around...
 # Apparently, that's not a thing. We'll do it like this only then.
 
-frame_panel_h = 100
+clip = Clip('berries', surf)
+curr_view = View(
+	clip,
+	tick = 0,
+	scroll = [0, 0],
+	zoom = 1,
+	frame_panel_h = 100,
+	frame_scroll = 0,
+)
 
-scroll = [0, 0]  # object space
-zoom = 1
-curr_mode = Mode.paint
-curr_tool = None
-paint_colour = c-0
-frame_scroll = 0
-playing = False
-drag_mode = DragMode.none
-ticks = 0
+session = Session(
+	curr_view,
+	paint_colour = c--1
+)
 
-frames: list[pygame.Surface] = [surf.copy() for i in range(16)]
-curr_frame = 0
-hovered_frame  = None  # For highlight
-selected_frame = None  # TODO: frame range
-selected_region = None
-show_selection = False
-text = f'{int.from_bytes(paint_colour, "big"):06x}'
+# TODO: move this to Session or Window
+# The lru has to be specific to the window right
+# The actual View list will be constant and part of the Session
+lru_idx = -1
 
 resize(res)
 pres = pygame.display.list_modes()[0]
@@ -266,114 +161,155 @@ while running:
 		if event.type == KEYDOWN:
 			if event.key == K_F11: toggleFullscreen()
 
-			elif curr_mode is Mode.type_colour:
+			elif session.curr_mode is Mode.type_colour:
 				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
 					if event.key == K_BACKSPACE:
-						split = text.rsplit(maxsplit=1)
-						if len(split) <= 1: text = ''
-						else: text = split[0]
+						split = session.text.rsplit(maxsplit=1)
+						if len(split) <= 1: session.text = ''
+						else: session.text = split[0]
 				elif event.key == K_BACKSPACE:
-					text = text[:-1]
+					session.text = session.text[:-1]
 				elif event.key == K_RETURN:
-					if curr_mode is Mode.type_colour:
-						paint_colour = c@int(text[-6:], 16)
-						text = f'{int.from_bytes(paint_colour, "big"):06x}'
-					curr_mode = Mode.paint
+					if session.curr_mode is Mode.type_colour:
+						session.paint_colour = c@int(session.text[-6:], 16)
+						session.text = f'{int.from_bytes(session.paint_colour, "big"):06x}'
+					session.curr_mode = Mode.paint
 
 				elif event.key == K_ESCAPE:
-					if curr_mode is Mode.type_colour:
-						text = f'{int.from_bytes(paint_colour, "big"):06x}'
-					curr_mode = Mode.paint
+					if session.curr_mode is Mode.type_colour:
+						session.text = f'{int.from_bytes(session.paint_colour, "big"):06x}'
+					session.curr_mode = Mode.paint
 
-				elif event.unicode and event.unicode in valid_chars[curr_mode]:
-					text += event.unicode
+				elif event.unicode and event.unicode in valid_chars[session.curr_mode]:
+					session.text += event.unicode
+
+			elif event.key == K_TAB:  # to change views
+				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
+					if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
+						lru_idx += 1
+					else:
+						lru_idx -= 1
+
+					lru_idx %= len(session.views)
+					curr_view = session.views[lru_idx]
 
 			elif event.key == K_ESCAPE:
-				# TODO: Separate keybinds for paint mode and deselection
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
-					show_selection = False  # shift+s to show
+					session.show_selection = False  # shift+s to show
 
-				elif curr_mode is not Mode.paint:
-					curr_mode = Mode.paint
+				elif session.curr_mode is not Mode.paint:
+					session.curr_mode = Mode.paint
 
-				else:
-					running = False
+				# else:
+				# 	running = False
+
 			elif event.key == K_c: # c for colour
-				curr_mode = Mode.type_colour
-				curr_tool = None
+				session.curr_mode = Mode.type_colour
+				session.curr_tool = None
 			elif event.key == K_s:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
-					show_selection = True  # shift+esc to hide
+					session.show_selection = True  # shift+esc to hide
 				else:
-					curr_mode = Mode.frame_select  # s for select
-				curr_tool = None
+					session.curr_mode = Mode.frame_select  # s for select
+				session.curr_tool = None
 			elif event.key == K_b:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
-					show_selection = True  # shift+esc to hide
+					session.show_selection = True  # shift+esc to hide
 				else:
-					curr_mode = Mode.pixel_region_select  # b for box
-				curr_tool = None
-			elif event.key == K_SPACE: playing = not playing
+					session.curr_mode = Mode.pixel_region_select  # b for box
+				session.curr_tool = None
+			elif event.key == K_SPACE: curr_view.playing = not curr_view.playing
 
-			elif event.key == K_LEFT:  set_frame(curr_frame-1); playing = False
-			elif event.key == K_RIGHT: set_frame(curr_frame+1); playing = False
-			elif event.key in (K_HOME, K_KP7): set_frame(0); playing = False
-			elif event.key in (K_END, K_KP1): set_frame(-1); playing = False
+			elif event.key == K_LEFT:
+				curr_view.set_frame(curr_view.curr_frame-1)
+				curr_view.playing = False
+			elif event.key == K_RIGHT:
+				curr_view.set_frame(curr_view.curr_frame+1)
+				curr_view.playing = False
+			elif event.key in (K_HOME, K_KP7):
+				curr_view.set_frame(0)
+				curr_view.playing = False
+			elif event.key in (K_END, K_KP1):
+				curr_view.set_frame(-1)
+				curr_view.playing = False
 
+			# View manip (not really tools... yet)
+			elif event.key == K_BACKSLASH:  # no ctrl, just direct.
+				curr_view = curr_view.copy()
+				session.views.append(curr_view)
+				lru_idx = len(session.views) - 1
+			elif event.key == K_SLASH:
+				if len(session.views) <= 1: continue  # ensure at least 1 view
+				session.views.pop(lru_idx)
+				curr_view.detach_from_clip()
+				lru_idx %= len(session.views)
+				curr_view = session.views[lru_idx]
 			
 			# TOOLS!
 
 			# Instant tools (act directly on current state)
 			elif event.key == K_n:  # Instant tools need not be too ergonomic
-				set_frame(tools.new_frame(frames, curr_frame))
+				curr_view.set_frame(tools.new_frame(curr_view.clip, curr_view.curr_frame))
 			elif event.key == K_k:
-				set_frame(tools.delete_curr_frame(frames, curr_frame))
+				curr_view.set_frame(tools.delete_curr_frame(curr_view.clip, curr_view.curr_frame))
 
 			# Direct/semi-modal tools (go to selection mode if no selection)
 			elif event.key == K_x:
 				# TODO: `handle_mode[mode].segment_i(...)` idk
-				if selected_frame is None or not show_selection:
-					curr_tool = tools.delete_frame
-					curr_mode = Mode.attached[curr_tool]
+				if session.selection is None or not session.show_selection:
+					session.curr_tool = tools.delete_frame
+					session.curr_mode = Mode.attached[session.curr_tool]
 				else:
-					set_frame(
-						tools.delete_frame(frames, selected_frame, curr_frame)
+					if isinstance(session.selection, RegionIdent):
+						frame = session.selection.frame_ident.frame
+					else:
+						frame = session.selection.frame
+
+					curr_view.set_frame(
+						tools.delete_frame(curr_view.clip, frame, curr_view.curr_frame)
 					)
 
 			# Modal tools (go to custom mode for more selections)
 			elif event.key == K_g:
-				curr_tool = tools.move_frame
-				curr_mode = Mode.attached[curr_tool]
+				session.curr_tool = tools.move_frame
+				session.curr_mode = Mode.attached[session.curr_tool]
+				session.drag_mode = DragMode.none
 
 			elif event.key == K_d:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
-					curr_tool = tools.copy_frame
-					curr_mode = Mode.attached[curr_tool]
+					session.curr_tool = tools.copy_frame
 				else:
-					curr_tool = tools.copy_region
-					curr_mode = Mode.attached[curr_tool]
-					if selected_region is None or not show_selection:
-						drag_mode = DragMode.pixel_region_select
+					session.curr_tool = tools.copy_region
+				session.curr_mode = Mode.attached[session.curr_tool]
+				session.drag_mode = DragMode.none
 
+			# TODO: move to semi-modal section
 			elif event.key == K_f: # region direct tool
-				if selected_region is None or not show_selection:
-					curr_tool = tools.fill
-					curr_mode = Mode.attached[curr_tool]
-					drag_mode = DragMode.pixel_region_select
+				if session.selection is None or not session.show_selection:
+					session.curr_tool = tools.fill
+					session.curr_mode = Mode.attached[session.curr_tool]
+					session.drag_mode = DragMode.none
 				else:
 					tools.fill(
-						frames[curr_frame], paint_colour, selected_region
+						curr_view.curr_surf(), session.paint_colour, session.selection.region  # type: ignore[union-attr]
 					)
 
+			# TODO: move to semi-modal section
 			elif event.key == K_e: # region direct tool
-				if selected_region is None or not show_selection:
-					curr_tool = tools.ellipse
-					curr_mode = Mode.attached[curr_tool]
-					drag_mode = DragMode.pixel_region_select
+				if session.selection is None or not session.show_selection:
+					session.curr_tool = tools.ellipse
+					session.curr_mode = Mode.attached[session.curr_tool]
+					session.drag_mode = DragMode.none
 				else:
 					tools.ellipse(
-						frames[curr_frame], paint_colour, selected_region
+						curr_view.curr_surf(), session.paint_colour, session.selection.region  # type: ignore[union-attr]
 					)
+
+		elif event.type == KEYUP:
+			if event.key in (K_LCTRL, K_RCTRL) and (lru_idx+1)%len(session.views):
+				# curr_view stays the same
+				session.reset_lru(lru_idx)
+				lru_idx = len(session.views)-1
 
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)
@@ -382,213 +318,240 @@ while running:
 			mods = pygame.key.get_mods()
 			mouse_pos = pygame.mouse.get_pos()
 
-			if mouse_pos[1] > h-SH - frame_panel_h:  # mousewheel event to frame panel
+			if mouse_pos[1] > h-SH - curr_view.frame_panel_h:  # mousewheel event to frame panel
 				if mods & (KMOD_LSHIFT|KMOD_RSHIFT):
 					dx, _dy = -event.y, event.x
 				else:
 					dx, _dy = event.x, -event.y
 
-				frame_scroll -= dx * 7
+				curr_view.frame_scroll -= dx * 7
 
 			elif mods & (KMOD_LCTRL|KMOD_RCTRL):
-				old_obj_space_mouse = from_screen_space(mouse_pos)
+				old_obj_space_mouse = curr_view.from_screen_space(mouse_pos)
 				# the diff that we had here
-				zoom *= ZOOM_FAC ** event.y
-				zoom = max(MIN_ZOOM, zoom)
+				curr_view.zoom *= ZOOM_FAC ** event.y
+				curr_view.zoom = max(MIN_ZOOM, curr_view.zoom)
 
 				# center at mouse
-				new_obj_space_mouse = from_screen_space(mouse_pos)
-				scroll[0] += new_obj_space_mouse[0] - old_obj_space_mouse[0]
-				scroll[1] += new_obj_space_mouse[1] - old_obj_space_mouse[1]
+				new_obj_space_mouse = curr_view.from_screen_space(mouse_pos)
+				curr_view.scroll[0] += new_obj_space_mouse[0] - old_obj_space_mouse[0]
+				curr_view.scroll[1] += new_obj_space_mouse[1] - old_obj_space_mouse[1]
 
 			else:
-				scroll[0] -= event.x * zoom * 12
-				scroll[1] += event.y * zoom * 12
+				curr_view.scroll[0] -= event.x * curr_view.zoom * 12
+				curr_view.scroll[1] += event.y * curr_view.zoom * 12
 
 		elif event.type == MOUSEBUTTONDOWN:
 			if event.button == 3:
-				drag_mode = DragMode.scrolling
+				session.drag_mode = DragMode.scrolling
 
 			elif event.button == 1:
-				print('MOUSEDOWN  FRAME', hovered_frame, curr_mode, drag_mode)
+				# intentional double space. don't touch.
+				print('MOUSEDOWN  FRAME', session.hover, session.curr_mode, session.drag_mode)
+
+				x, y = curr_view.from_screen_space(event.pos)
+				x, y = int(x), int(y)
 
 				mods = pygame.key.get_mods()
 				if mods & (KMOD_LALT|KMOD_RALT):
-					if hovered_frame is not None: continue  # mouse on panel
-					paint_colour = surf.get_at((x, y))
-					text = f'{int.from_bytes(paint_colour, "big"):06x}'
+					if session.hover is not None: continue  # mouse on panel
+					session.paint_colour = surf.get_at((x, y))
+					session.text = f'{int.from_bytes(session.paint_colour, "big"):06x}'
 
-				elif curr_mode == Mode.paint:
-					if hovered_frame in range(len(frames)):  # wrap-around would be weird
-						set_frame(hovered_frame)
-						drag_mode = DragMode.scrub
+				elif session.curr_mode == Mode.paint:
+					if session.hover in curr_view.clip:  # wrap-around would be weird
+						curr_view.set_frame(session.hover.frame)  # type: ignore[union-attr]
+						session.drag_mode = DragMode.scrub
 						continue
 
-					if hovered_frame is not None: continue  # mouse on panel
+					if session.hover is not None: continue  # mouse on panel
 
-					x, y = from_screen_space(event.pos)
-					x, y = int(x), int(y)
-
-					surf = frames[curr_frame]
+					surf = curr_view.curr_surf()
 					if not surf.get_rect().collidepoint((x, y)): continue
 
-					drag_mode = DragMode.default
+					session.drag_mode = DragMode.default
 
-					surf.set_at((x, y), paint_colour)
+					surf.set_at((x, y), session.paint_colour)
 
-				elif curr_mode == Mode.frame_select:
-					if hovered_frame in range(len(frames)):
-						show_selection = True
-						selected_frame = hovered_frame
+				elif session.curr_mode == Mode.frame_select:
+					if session.hover in curr_view.clip:
+						session.show_selection = True
+						session.selection = FrameIdent(
+							session.hover.clip, session.hover.frame  # type: ignore[union-attr]
+						)
 						# don't start scrub because we need selection not view
 
-				elif curr_mode == Mode.frame_dest:
-					if hovered_frame not in range(len(frames)): continue
+				elif session.curr_mode == Mode.frame_dest:
+					if session.hover not in curr_view.clip: continue
 
-					if not show_selection or selected_frame is None:
-						show_selection = True
-						selected_frame = hovered_frame  # simulates click-drag
+					if not session.show_selection or session.selection is None:
+						session.show_selection = True
 
-					set_frame(hovered_frame)
-					drag_mode = DragMode.scrub
+						# simulates click-drag
+						# NOTE: beware of mutability
+						session.selection = session.hover
 
-				elif curr_mode == Mode.pixel_region_select:
-					if hovered_frame is not None:
-						if hovered_frame in range(len(frames)):
-							drag_mode = DragMode.scrub
-							set_frame(hovered_frame)
+					curr_view.set_frame(session.hover.frame)  # type: ignore[union-attr]
+					session.drag_mode = DragMode.scrub
 
-					else:
-						show_selection = True
-						selected_frame = curr_frame
-						start_selection(event.pos)
-
-				elif curr_mode == Mode.pixel_dest:
-					if hovered_frame is not None:
-						if hovered_frame in range(len(frames)):
-							drag_mode = DragMode.scrub
-							set_frame(hovered_frame)
-
-					elif not show_selection or selected_frame is None:
-						show_selection = True
-						selected_frame = curr_frame
-						start_selection(event.pos)
+				elif session.curr_mode == Mode.pixel_region_select:
+					if session.hover is not None:
+						if session.hover in curr_view.clip:
+							session.drag_mode = DragMode.scrub
+							curr_view.set_frame(session.hover.frame)
 
 					else:
-						drag_mode = DragMode.default  # apply on mouse up
+						start_selection(event.pos)
+
+				elif session.curr_mode == Mode.pixel_dest:
+					if session.hover is not None:
+						if session.hover in curr_view.clip:
+							session.drag_mode = DragMode.scrub
+							curr_view.set_frame(session.hover.frame)
+
+					elif not session.show_selection or session.selection is None:
+						start_selection(event.pos)
+
+					else:
+						session.drag_mode = DragMode.default  # apply on mouse up
 
 				else:
-					updateStat(f'Unsupported mode {curr_mode} for mouse down')
+					updateStat(f'Unsupported mode {session.curr_mode} for mouse down')
 
 		elif event.type == MOUSEBUTTONUP:
 			if event.button == 3:
-				if drag_mode is DragMode.scrolling:
-					drag_mode = DragMode.none
+				if session.drag_mode is DragMode.scrolling:
+					session.drag_mode = DragMode.none
 
 			elif event.button == 1:
-				print('MOUSEUP ON FRAME', hovered_frame, curr_mode, drag_mode)
+				print('MOUSEUP ON FRAME', session.hover, session.curr_mode, session.drag_mode)
 
 				# No tool
 
-				if curr_tool is None:
+				if session.curr_tool is None:
 					# paint, type_colour, frame_select, pixel_region_select
 					# drag_mode can be scrub in pixel_region_select mode
-					if drag_mode is not DragMode.scrub: curr_mode = Mode.paint
-					drag_mode = DragMode.none
+					if session.drag_mode is not DragMode.scrub: session.curr_mode = Mode.paint
+					session.drag_mode = DragMode.none
 					continue
 
 				# Direct tools (already applied, or applied on mouse up)
 
-				elif curr_mode is Mode.frame_direct:
-					set_frame(curr_tool(frames, selected_frame, curr_frame))
+				elif session.curr_mode is Mode.frame_direct:
+					# mouseup on frame_direct must have a selection
+					# ... unless we get a sole mouseup event, ignore for now
+					frame_ident = session.selection.frame_ident  # type: ignore[union-attr]
 
-				elif curr_mode is Mode.region_direct:
-					curr_tool(surf, selected_region)
+					# Also handles multiclip
+					if session.hover not in frame_ident.clip: continue
 
-				elif curr_mode is Mode.fill:
-					curr_tool(
-						frames[curr_frame], paint_colour, selected_region
+					curr_view.set_frame(
+						session.curr_tool(
+							frame_ident.clip,
+							frame_ident.frame,
+							session.hover.frame,  # type: ignore[union-attr]
+						)
+					)
+
+				elif session.curr_mode is Mode.region_direct:
+					# mouseup on region_direct must have a selection
+					# ... unless we get a sole mouseup event, ignore for now
+					session.curr_tool(
+						curr_view.curr_surf(), session.selection.region  # type: ignore[union-attr]
+					)
+
+				elif session.curr_mode is Mode.fill:
+					# mouseup on fill must have a selection
+					# ... unless we get a sole mouseup event, ignore for now
+					session.curr_tool(
+						curr_view.curr_surf(),
+						session.selection.region,  # type: ignore[union-attr]
+						session.paint_colour
 					)
 
 				# Fully modal tools. Apply the tool on mouse up. TODO: preview
 
-				elif curr_mode is Mode.frame_dest:
-					if drag_mode is not DragMode.scrub: continue
+				elif session.curr_mode is Mode.frame_dest:
+					if session.drag_mode is not DragMode.scrub: continue
 
-					print(curr_tool, hovered_frame, selected_frame)
-					curr_tool(frames, hovered_frame, selected_frame)
+					print(session.curr_tool, session.hover, session.selection)
+					session.curr_tool(session.hover, session.selection.frame_ident)  # type: ignore[union-attr]
 
-				elif curr_mode is Mode.pixel_dest:
-					if drag_mode in (
+				elif session.curr_mode is Mode.pixel_dest:
+					if session.drag_mode in (
 						DragMode.pixel_region_select, DragMode.scrub
 					):
-						drag_mode = DragMode.none
+						session.drag_mode = DragMode.none
 						continue  # keep selection
 
 					print('Pixel dest')
 
-					pixel = from_screen_space(event.pos)
+					x, y = curr_view.from_screen_space(event.pos)
+					pixel = int(x), int(y)
 					# # copy_region() can handle out of bounds dest
 					# if not frames[curr_frame].get_rect().collidepoint(pixel):
 					# 	continue
 
-					# Region should contain frame?
-					curr_tool(
-						frames,
-						curr_frame,
-						pixel,
-						selected_frame,
-						selected_region.as_rect(),
+					# session.selection should be a RegionIdent here
+					# because drag_mode not in (region_select, scrub)
+					session.curr_tool(
+						curr_view.curr_frame_ident(), pixel,
+						session.selection.frame_ident,  # type: ignore[union-attr]
+						session.selection.region,       # type: ignore[union-attr]
 					)
 
 				else:
 					updateStat('Unknown mode')
 
-				curr_tool = None
-				curr_mode = Mode.paint
-				show_selection = False
-				drag_mode = DragMode.none
+				session.curr_tool = None
+				session.curr_mode = Mode.paint
+				session.show_selection = False
+				session.drag_mode = DragMode.none
 
 		elif event.type == MOUSEMOTION:
-			if drag_mode is DragMode.none:
-				hovered_frame = None
+			if session.drag_mode is DragMode.none:
+				session.hover = None
 
-				if event.pos[1] >= h-SH - frame_panel_h:
-					hovered_frame = int(frame_from_screen_space(event.pos[0]))
+				# TODO: use curr_view position
+				if event.pos[1] >= h-SH - curr_view.frame_panel_h:
+					hovered_frame = curr_view.frame_from_screen_space(event.pos[0])
+					session.hover = FrameIdent(curr_view.clip, int(hovered_frame))
 
-			elif drag_mode is DragMode.scrub:
-				hovered_frame = int(frame_from_screen_space(event.pos[0]))
-				if hovered_frame in range(len(frames)): set_frame(hovered_frame)
+			elif session.drag_mode is DragMode.scrub:
+				# TODO: offset event.pos with layout
 
-			elif drag_mode is DragMode.pixel_region_select:
-				x, y = from_screen_space(event.pos)
+				# TODO: use curr_view position
+				hovered_frame = curr_view.frame_from_screen_space(event.pos[0])
+				session.hover = FrameIdent(curr_view.clip, int(hovered_frame))
+
+				if session.hover in curr_view.clip:
+					curr_view.set_frame(session.hover.frame)
+
+			elif session.drag_mode is DragMode.pixel_region_select:
+				x, y = curr_view.from_screen_space(event.pos)
 				x, y = int(x), int(y)
 
-				surf = frames[curr_frame]
+				surf = curr_view.curr_surf()
 				if not surf.get_rect().collidepoint((x, y)): continue
 
-				selected_region.set_end((x, y))
+				session.selection.region.set_end((x, y))  # type: ignore[union-attr]
 
-			elif drag_mode is DragMode.scrolling:
-				scroll[0] += event.rel[0] * zoom
-				scroll[1] += event.rel[1] * zoom
+			elif session.drag_mode is DragMode.scrolling:
+				curr_view.scroll[0] += event.rel[0] * curr_view.zoom
+				curr_view.scroll[1] += event.rel[1] * curr_view.zoom
 
-			elif curr_mode is Mode.paint:
-				x, y = from_screen_space(event.pos)
+			elif session.curr_mode is Mode.paint:
+				x, y = curr_view.from_screen_space(event.pos)
 				x, y = int(x), int(y)
 
-				surf = frames[curr_frame]
+				surf = curr_view.curr_surf()
 				if not surf.get_rect().collidepoint((x, y)): continue
 
-				surf.set_at((x, y), paint_colour)
+				surf.set_at((x, y), session.paint_colour)
 
 	updateDisplay()
 	frame_time = clock.tick(fps)
 
-	if playing:
-
-		ticks += frame_time
-		ticks %= len(frames) * 1000 // play_fps
-
-		# prev_frame = curr_frame
-		curr_frame = ticks * play_fps // 1000
+	for view in session.views:
+		if curr_view.playing:
+			curr_view.set_tick(curr_view.tick + frame_time)

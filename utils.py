@@ -1,4 +1,9 @@
 from enum import Enum, auto
+from typing import Optional, Callable, TYPE_CHECKING, TypeVar
+if TYPE_CHECKING:
+	from views import Clip
+
+F = TypeVar('F')
 
 class AttachedEnum(Enum):
 	'''
@@ -6,14 +11,18 @@ class AttachedEnum(Enum):
 	to their corresponding enum variants.
 	'''
 
+	attached: dict
+
 	def __init_subclass__(cls):
 		cls.attached = {}
 
-	def attach(self, fn):  # decorator names are usually adjectives
+	def attach(self, fn: F) -> F:  # decorator names are usually adjectives
 		self.attached[fn] = self
 		return fn
 
 class Mode(AttachedEnum):
+	__getitem__: Callable[..., 'Mode']  # Just an annotation can't hurt.
+
 	paint = auto()
 	type_colour = auto()
 	frame_select = auto()  # click to only set selected but not current
@@ -29,13 +38,37 @@ class Mode(AttachedEnum):
 	# separate mode just for fill
 	fill = auto()  # (&mut surf, rect, colour) -> None  # applies directly if there is already a selection
 
+class DragMode(Enum):
+	none = auto()
+	scrolling = auto()
+	default = auto()  # default drag mode for either frame panel or viewport
+	scrub = auto()  # used to select current frame
+	pixel_region_select = auto()  # while making a selection
+	# frame_region_select = auto()
+
+class FrameIdent:
+	def __init__(self, clip: 'Clip', frame: int):
+		self.clip = clip
+		self.frame = frame
+
+	def frame_surf(self):
+		return self.clip[self.frame]
+
+class RegionIdent:
+	def __init__(self, clip: 'Clip', frame: int, region: 'Region'):
+		self.frame_ident = FrameIdent(clip, frame)
+		self.region = region
+
+	def __bool__(self):
+		return not not self.region
+
 class Region:
 	def __init__(self, start: tuple[int, int], end: tuple[int, int]):
 		self._start = start
 		self._end = end
 		print('end set to', end)
 
-		self._reorganised = None
+		self._reorganised: Optional[Region] = None
 
 	def __bool__(self):
 		return self._start != None != self._end
