@@ -7,7 +7,7 @@
 # DONE: frames
 # DONE: select
 # DONE: views
-# TODO: lru_indirection
+# DONE: lru_indirection
 # TODO: multiclip support, new clip from selection
 # TODO: new clip from clipboard
 # TODO: text?
@@ -83,7 +83,7 @@ def updateDisplay():
 	display.blit(view_surf, (0, 0))  # TODO: Use layout
 
 	updateStat(
-		f'{lru_idx} of {len(session.views)} -> {curr_view} '
+		f'{view_idx} of {len(lru_stack)} -> {curr_view} '
 		f'in {session.curr_mode} and {session.drag_mode}, '
 		f'text: {session.text}',
 		update = False,
@@ -116,6 +116,19 @@ def start_selection(pos):
 
 	# print('Rectangle starting from', session.selection.region._start)
 
+# TODO: Move to Window class
+def update_curr_view(lru_idx):
+	global view_idx, curr_view
+	view_idx = lru_stack[lru_idx]
+	curr_view = session.views[view_idx]
+
+# TODO: Move to Window class
+def reset_lru():
+	global lru_stack, lru_idx
+
+	lru_stack.append(lru_stack.pop(lru_idx))
+	lru_idx = len(lru_stack)-1
+	# don't update_curr_view because view_idx is unchanged
 
 valid_chars = {
 	Mode.type_colour: set('0123456789abcdefABCDEF'),
@@ -146,10 +159,12 @@ session = Session(
 	paint_colour = c--1
 )
 
-# TODO: move this to Session or Window
+# TODO: move this to Window
 # The lru has to be specific to the window right
 # The actual View list will be constant and part of the Session
-lru_idx = -1
+lru_stack = session.generate_lru_stack()  # this will be in Window.__init__()
+lru_idx = len(lru_stack)-1
+update_curr_view(lru_idx)
 
 resize(res)
 pres = pygame.display.list_modes()[0]
@@ -190,8 +205,8 @@ while running:
 					else:
 						lru_idx -= 1
 
-					lru_idx %= len(session.views)
-					curr_view = session.views[lru_idx]
+					lru_idx %= len(lru_stack)
+					update_curr_view(lru_idx)
 
 			elif event.key == K_ESCAPE:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
@@ -237,13 +252,23 @@ while running:
 			elif event.key == K_BACKSLASH:  # no ctrl, just direct.
 				curr_view = curr_view.copy()
 				session.views.append(curr_view)
-				lru_idx = len(session.views) - 1
+				lru_stack.append(len(session.views)-1)  # new view_idx
+				lru_idx = len(lru_stack) - 1
+				update_curr_view(lru_idx)
+				print(lru_stack)
+
 			elif event.key == K_SLASH:
-				if len(session.views) <= 1: continue  # ensure at least 1 view
-				session.views.pop(lru_idx)
+				# delete from lru_stack
+				# the view is still maintained in the Session object
+				# TODO: delete from session and update all lru_stacks
+
+				if len(lru_stack) <= 1: continue  # ensure at least 1 view
+				lru_stack.pop(lru_idx)
+				print('detaching view', view_idx)
+				print(lru_stack)
 				curr_view.detach_from_clip()
-				lru_idx %= len(session.views)
-				curr_view = session.views[lru_idx]
+				lru_idx %= len(lru_stack)
+				update_curr_view(lru_idx)
 			
 			# TOOLS!
 
@@ -306,10 +331,10 @@ while running:
 					)
 
 		elif event.type == KEYUP:
-			if event.key in (K_LCTRL, K_RCTRL) and (lru_idx+1)%len(session.views):
+			if event.key in (K_LCTRL, K_RCTRL) and (lru_idx+1)%len(lru_stack):
 				# curr_view stays the same
-				session.reset_lru(lru_idx)
-				lru_idx = len(session.views)-1
+				reset_lru()
+				print(lru_stack)
 
 		elif event.type == VIDEORESIZE:
 			if not display.get_flags()&FULLSCREEN: resize(event.size)

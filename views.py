@@ -33,8 +33,10 @@ class Session:
 
 		self.views = [view]
 
-	def reset_lru(self, lru_idx):
-		self.views.append(self.views.pop(lru_idx))
+	def generate_lru_stack(self) -> list[int]:
+		return [*range(len(self.views))]
+
+	# def update_lru_stack(self): ...  # call when we delete a view
 
 class Clip:  # contains frames
 	def __init__(self, name: str, surf: Surface):
