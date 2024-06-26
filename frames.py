@@ -9,7 +9,7 @@
 # DONE: views
 # DONE: lru_indirection
 # DONE: multiclip support, new clip from selection
-# TODO: new clip from clipboard
+# DONE: new clip from clipboard
 # TODO: text?
 # TODO: multiarg tool support
 # TODO: new blank clip (requires multiargs for dimensions)
@@ -19,6 +19,9 @@
 from os import environ
 environ['PYGAME_HIDE_SUPPORT_PROMPT'] = 'hide'
 
+from PIL import ImageGrab, Image
+from PIL.PngImagePlugin import PngImageFile as PilPng
+from PIL.BmpImagePlugin import DibImageFile as PilDib
 from typing import Union
 from os.path import expanduser
 import numpy as np
@@ -34,7 +37,7 @@ from pygame import (
 	K_LCTRL, K_RCTRL, K_LSHIFT, K_RSHIFT,
 	K_BACKSPACE, K_END, K_ESCAPE, K_TAB, K_F11, K_HOME, K_KP1, K_KP7, K_F4,
 	K_LEFT, K_RETURN, K_RIGHT, K_SPACE, K_BACKSLASH, K_SLASH,
-	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_s, K_x,
+	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_s, K_v, K_x,
 	RESIZABLE, FULLSCREEN,
 )
 pygame.font.init()
@@ -293,12 +296,35 @@ while running:
 								frame_panel_h=curr_view.frame_panel_h,
 							)
 						)
-						new_lru_view(len(session.views)-1)
+						new_lru_view(new_view_idx=len(session.views)-1)
 					else:
 						session.curr_mode = Mode.region_extract
 						session.curr_tool = tools.new_clip
 				else:
 					curr_view.set_frame(tools.new_frame(curr_view.clip, curr_view.curr_frame))
+
+			elif event.key == K_v:
+				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):  # paste
+					cb_img = ImageGrab.grabclipboard()
+
+					if not isinstance(cb_img, (PilPng, PilDib)): continue
+
+					surf = pygame.image.fromstring(
+						cb_img.tobytes(),  # type: ignore[arg-type]  # mypy wants a string here for some reason
+						cb_img.size,
+						cb_img.mode,       # type: ignore[arg-type]  # we have to trust it's the correct literal
+					)
+
+					clip = Clip(f'cb image {len(session.clips)}', surf)
+					session.views.append(
+							View(
+								clip,
+								zoom=curr_view.zoom,
+								frame_panel_h=curr_view.frame_panel_h,
+							)
+						)
+					new_lru_view(new_view_idx=len(session.views)-1)
+
 			elif event.key == K_k:
 				curr_view.set_frame(tools.delete_curr_frame(curr_view.clip, curr_view.curr_frame))
 
@@ -536,7 +562,7 @@ while running:
 							frame_panel_h=curr_view.frame_panel_h,
 						)
 					)
-					new_lru_view(len(session.views)-1)
+					new_lru_view(new_view_idx=len(session.views)-1)
 
 				# Fully modal tools. Apply the tool on mouse up. TODO: preview
 
