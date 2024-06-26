@@ -8,7 +8,7 @@
 # DONE: select
 # DONE: views
 # DONE: lru_indirection
-# TODO: multiclip support, new clip from selection
+# DONE: multiclip support, new clip from selection
 # TODO: new clip from clipboard
 # TODO: text?
 # TODO: multiarg tool support
@@ -31,8 +31,9 @@ from pygame import (
 	KEYDOWN, KEYUP, QUIT, VIDEORESIZE,
 	MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION, MOUSEWHEEL,
 	KMOD_LALT, KMOD_LCTRL, KMOD_LSHIFT, KMOD_RALT, KMOD_RCTRL, KMOD_RSHIFT,
+	K_LCTRL, K_RCTRL, K_LSHIFT, K_RSHIFT,
 	K_BACKSPACE, K_END, K_ESCAPE, K_TAB, K_F11, K_HOME, K_KP1, K_KP7, K_F4,
-	K_LEFT, K_RETURN, K_RIGHT, K_SPACE, K_LCTRL, K_RCTRL, K_BACKSLASH, K_SLASH,
+	K_LEFT, K_RETURN, K_RIGHT, K_SPACE, K_BACKSLASH, K_SLASH,
 	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_s, K_x,
 	RESIZABLE, FULLSCREEN,
 )
@@ -117,10 +118,20 @@ def start_selection(pos):
 	# print('Rectangle starting from', session.selection.region._start)
 
 # TODO: Move to Window class
+view_idx: int
 def update_curr_view(lru_idx):
 	global view_idx, curr_view
 	view_idx = lru_stack[lru_idx]
 	curr_view = session.views[view_idx]
+
+# TODO: Move to Window class
+def new_lru_view(new_view_idx):  # Adds a new view to the lru stack and changes the current view as well
+	global lru_idx, lru_stack, view_idx, curr_view
+	view_idx = new_view_idx
+	curr_view = session.views[view_idx]
+
+	lru_stack.append(new_view_idx)
+	lru_idx = len(lru_stack)-1
 
 # TODO: Move to Window class
 def reset_lru():
@@ -146,12 +157,7 @@ surf = pygame.image.load('berries.jpg')
 
 clip = Clip('berries', surf)
 curr_view = View(
-	clip,
-	tick = 0,
-	scroll = [0, 0],
-	zoom = 1,
-	frame_panel_h = 100,
-	frame_scroll = 0,
+	clip, frame_panel_h = 100,
 )
 
 session = Session(
@@ -274,7 +280,25 @@ while running:
 
 			# Instant tools (act directly on current state)
 			elif event.key == K_n:  # Instant tools need not be too ergonomic
-				curr_view.set_frame(tools.new_frame(curr_view.clip, curr_view.curr_frame))
+				if event.mod & (K_LSHIFT|K_RSHIFT):
+					if (
+						session.show_selection
+						and isinstance(session.selection, RegionIdent)
+					):
+						clip = tools.new_clip(session)
+						session.views.append(
+							View(
+								clip,
+								zoom=curr_view.zoom,
+								frame_panel_h=curr_view.frame_panel_h,
+							)
+						)
+						new_lru_view(len(session.views)-1)
+					else:
+						session.curr_mode = Mode.region_extract
+						session.curr_tool = tools.new_clip
+				else:
+					curr_view.set_frame(tools.new_frame(curr_view.clip, curr_view.curr_frame))
 			elif event.key == K_k:
 				curr_view.set_frame(tools.delete_curr_frame(curr_view.clip, curr_view.curr_frame))
 
@@ -398,7 +422,9 @@ while running:
 
 					surf.set_at((x, y), session.paint_colour)
 
-				elif session.curr_mode == Mode.frame_select:
+				elif session.curr_mode in (
+					Mode.frame_select, Mode.frame_direct
+				):
 					if session.hover in curr_view.clip:
 						session.show_selection = True
 						session.selection = FrameIdent(
@@ -419,7 +445,10 @@ while running:
 					curr_view.set_frame(session.hover.frame)  # type: ignore[union-attr]
 					session.drag_mode = DragMode.scrub
 
-				elif session.curr_mode == Mode.pixel_region_select:
+				elif session.curr_mode in (
+					Mode.pixel_region_select, Mode.region_direct,
+					Mode.fill, Mode.region_extract,
+				):
 					if session.hover is not None:
 						if session.hover in curr_view.clip:
 							session.drag_mode = DragMode.scrub
@@ -440,8 +469,9 @@ while running:
 					else:
 						session.drag_mode = DragMode.default  # apply on mouse up
 
-				else:
+				else:  # type_colour
 					updateStat(f'Unsupported mode {session.curr_mode} for mouse down')
+					print(f'Unsupported mode {session.curr_mode} for mouse down')
 
 		elif event.type == MOUSEBUTTONUP:
 			if event.button == 3:
@@ -494,6 +524,20 @@ while running:
 						session.paint_colour
 					)
 
+				elif session.curr_mode is Mode.region_extract:
+					print('MOUSEUP FOR REGION EXTRACT')
+					# mouseup on region_extract must have a selection
+					# ... unless we get a sole mouseup event, ignore for now
+					clip = session.curr_tool(session)
+					session.views.append(
+						View(
+							clip,
+							zoom=curr_view.zoom,
+							frame_panel_h=curr_view.frame_panel_h,
+						)
+					)
+					new_lru_view(len(session.views)-1)
+
 				# Fully modal tools. Apply the tool on mouse up. TODO: preview
 
 				elif session.curr_mode is Mode.frame_dest:
@@ -525,7 +569,7 @@ while running:
 						session.selection.region,       # type: ignore[union-attr]
 					)
 
-				else:
+				else:  # paint, type_colour, frame_select, pixel_region_select
 					updateStat('Unknown mode')
 
 				session.curr_tool = None

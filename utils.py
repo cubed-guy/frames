@@ -30,13 +30,12 @@ class Mode(AttachedEnum):
 
 	# tool modes
 	# attach these to functions to annotate required function signature
-	frame_dest = auto()  # (&mut frames, dst_frame, src_frame) -> None
-	frame_direct = auto()  # (&mut frames, target_frame, curr_frame) -> new_frame  # applies directly if there is already a selection
-	pixel_dest = auto()  # (&mut frames, target_frame, dst_pixel, src_frame, src_rect) -> None
-	region_direct = auto()  # (&mut frames, target_frame, dst_pixel, src_frame, src_rect) -> None
-
-	# separate mode just for fill
-	fill = auto()  # (&mut surf, rect, colour) -> None  # applies directly if there is already a selection
+	frame_dest = auto()
+	frame_direct = auto()  # applies directly if selection exists
+	pixel_dest = auto()
+	region_direct = auto()  # applies directly if selection is a region
+	region_extract = auto()  # applies directly if selection is a region
+	fill = auto()  # applies directly if selection is a region
 
 class DragMode(Enum):
 	none = auto()

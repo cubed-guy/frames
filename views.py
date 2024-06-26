@@ -31,6 +31,7 @@ class Session:
 		self.show_selection = False
 		self.text = f'{int.from_bytes(paint_colour, "big"):06x}'
 
+		self.clips = [view.clip]
 		self.views = [view]
 
 	def generate_lru_stack(self) -> list[int]:
@@ -39,7 +40,7 @@ class Session:
 	# def update_lru_stack(self): ...  # call when we delete a view
 
 class Clip:  # contains frames
-	def __init__(self, name: str, surf: Surface):
+	def __init__(self, name: str, surf: Surface):  # TODO: accept frame list
 		self.name = name
 		self.frames = [surf]  # always len(frames) >= 1
 		self.views: list['View'] = []
@@ -64,9 +65,9 @@ class Clip:  # contains frames
 class View:  # contains a clip and how it will be rendered
 	def __init__(
 		self, clip, *,
-		tick, frame_panel_h,
+		frame_panel_h,
 		zoom = 1, scroll = None, frame_scroll = 0,
-		playing = False, play_fps = 24,
+		tick=0, playing = False, play_fps = 24,
 	):
 		self.clip: Clip = clip
 

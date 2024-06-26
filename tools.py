@@ -1,6 +1,7 @@
 from pygame import Surface
-from views import Clip
+from views import Clip, Session
 from utils import Mode, Region, FrameIdent, RegionIdent
+from typing import TYPE_CHECKING
 import pygame.draw
 
 NewCurrFrame = int
@@ -57,3 +58,17 @@ def fill(surf: Surface, region: Region, colour):
 @Mode.fill.attach
 def ellipse(surf: Surface, region: Region, colour):
 	pygame.draw.ellipse(surf, colour, region.as_rect())
+
+@Mode.region_extract.attach
+def new_clip(session: Session) -> Clip:
+	selection = session.selection
+	if TYPE_CHECKING: assert isinstance(selection, RegionIdent)
+	surf = selection.frame_ident.frame_surf()
+
+	new_surf = surf.subsurface(selection.region.as_rect()).copy()
+	print('original surface:', surf)
+	print('new surface created:', new_surf)
+	clip = Clip('Copy of ' + selection.frame_ident.clip.name, new_surf)
+	print('new clip:', clip)
+	session.clips.append(clip)
+	return clip
