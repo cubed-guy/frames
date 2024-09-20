@@ -1,8 +1,10 @@
 from enum import Enum, auto
-from typing import Optional, Callable, TYPE_CHECKING, TypeVar
+from typing import Optional, Callable, TYPE_CHECKING, TypeVar, Union
+import pygame
 if TYPE_CHECKING:
 	from views import Clip
 
+Surface = Union[pygame.Surface, pygame.surface.Surface]
 F = TypeVar('F')
 
 class AttachedEnum(Enum):
@@ -50,8 +52,8 @@ class FrameIdent:
 		self.clip = clip
 		self.frame = frame
 
-	def frame_surf(self):
-		return self.clip[self.frame]
+	def frame_surf(self) -> Surface:
+		return self.clip.surf_at(self.frame)
 
 class RegionIdent:
 	def __init__(self, clip: 'Clip', frame: int, region: 'Region'):
@@ -60,6 +62,9 @@ class RegionIdent:
 
 	def __bool__(self):
 		return not not self.region
+
+	def __repr__(self):
+		return f'RegionIdent({self.frame_ident.clip}, {self.frame_ident.frame}, {self.region})'
 
 class Region:
 	def __init__(self, start: tuple[int, int], end: tuple[int, int]):
@@ -84,7 +89,7 @@ class Region:
 		self._start = start
 		self._reorganised = None
 
-	def reorganised(self):
+	def reorganised(self) -> 'Region':
 		if self._reorganised is not None: return self._reorganised
 
 		x1, y1 = self._start
@@ -97,7 +102,7 @@ class Region:
 		self._reorganised = self.__class__((x1, y1), (x2, y2))
 		return self._reorganised
 
-	def as_rect(self):
+	def as_rect(self) -> tuple[int, int, int, int]:
 		region = self.reorganised()
 		x1, y1 = region._start
 		x2, y2 = region._end

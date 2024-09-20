@@ -10,7 +10,7 @@
 # DONE: lru_indirection
 # DONE: multiclip support, new clip from selection
 # DONE: new clip from clipboard
-# TODO: text?
+# TODO: text
 # TODO: multiarg tool support
 # TODO: new blank clip (requires multiargs for dimensions)
 # TODO: preview
@@ -26,7 +26,8 @@ from typing import Union
 from os.path import expanduser
 import numpy as np
 from utils import DragMode, Mode, Region, RegionIdent, FrameIdent
-from views import View, Clip, Session
+from views import View, Clip, SurfClip, TextClip, Session
+from text import TextSurface
 import tools
 
 import pygame
@@ -35,13 +36,13 @@ from pygame import (
 	MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION, MOUSEWHEEL,
 	KMOD_LALT, KMOD_LCTRL, KMOD_LSHIFT, KMOD_RALT, KMOD_RCTRL, KMOD_RSHIFT,
 	K_LCTRL, K_RCTRL, K_LSHIFT, K_RSHIFT,
-	K_BACKSPACE, K_END, K_ESCAPE, K_TAB, K_F11, K_HOME, K_KP1, K_KP7, K_F4,
+	K_BACKSPACE, K_END, K_ESCAPE, K_TAB, K_F11, K_HOME, K_KP1, K_KP7,
 	K_LEFT, K_RETURN, K_RIGHT, K_SPACE, K_BACKSLASH, K_SLASH,
 	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_s, K_v, K_x,
 	RESIZABLE, FULLSCREEN,
 )
 pygame.font.init()
-font_path = expanduser('~/Code/Product Sans Regular.ttf')
+font_path = expanduser('~/Assets/Product Sans Regular.ttf')
 font  = pygame.font.Font(font_path, 16)
 sfont = pygame.font.Font(font_path, 12)
 
@@ -61,7 +62,7 @@ MIN_ZOOM = 0.002
 
 w, h = res = (1280, 720)
 
-def updateStat(msg, update = True):
+def updateStat(msg, update = True) -> None:
 	# call this if you have a long loop that'll taking too long
 	rect = (0, h-SH, w, 21)
 
@@ -73,13 +74,13 @@ def updateStat(msg, update = True):
 	if update: pygame.display.update(rect)
 
 display: Union[pygame.Surface, pygame.surface.Surface]  # A single annotation can't hurt
-def resize(size):
+def resize(size: tuple[int, int]) -> None:
 	global w, h, res, display
 	w, h = res = size
 	display = pygame.display.set_mode(res, RESIZABLE)
 	updateDisplay()
 
-def updateDisplay():
+def updateDisplay() -> None:
 	if session.show_selection: selection = session.selection
 	else: selection = None
 	view_surf = curr_view.render(w, h, selection, session.hover)
@@ -94,14 +95,14 @@ def updateDisplay():
 	)
 	pygame.display.flip()
 
-def toggleFullscreen():
+def toggleFullscreen() -> None:
 	global pres, res, w, h, display
 	res, pres =  pres, res
 	w, h = res
 	if display.get_flags()&FULLSCREEN: resize(res)
 	else: display = pygame.display.set_mode(res, FULLSCREEN); updateDisplay()
 
-def start_selection(pos):
+def start_selection(pos: tuple[int, int]) -> None:
 	# TODO: move this to Session
 
 	x, y = curr_view.from_screen_space(pos)
@@ -122,13 +123,13 @@ def start_selection(pos):
 
 # TODO: Move to Window class
 view_idx: int
-def update_curr_view(lru_idx):
+def update_curr_view(lru_idx: int) -> None:
 	global view_idx, curr_view
 	view_idx = lru_stack[lru_idx]
 	curr_view = session.views[view_idx]
 
 # TODO: Move to Window class
-def new_lru_view(new_view_idx):  # Adds a new view to the lru stack and changes the current view as well
+def new_lru_view(new_view_idx: int) -> None:  # Adds a new view to the lru stack and changes the current view as well
 	global lru_idx, lru_stack, view_idx, curr_view
 	view_idx = new_view_idx
 	curr_view = session.views[view_idx]
@@ -137,7 +138,7 @@ def new_lru_view(new_view_idx):  # Adds a new view to the lru stack and changes 
 	lru_idx = len(lru_stack)-1
 
 # TODO: Move to Window class
-def reset_lru():
+def reset_lru() -> None:
 	global lru_stack, lru_idx
 
 	lru_stack.append(lru_stack.pop(lru_idx))
@@ -158,7 +159,11 @@ surf = pygame.image.load('berries.jpg')
 # access the surface from array rather than the other way around...
 # Apparently, that's not a thing. We'll do it like this only then.
 
-clip = Clip('berries', surf)
+# clip = SurfClip('berries', surf)
+clip: Clip = TextClip('hello', TextSurface(font_path, 216,
+	colour=fg, text='Hello, World!'
+))
+
 curr_view = View(
 	clip, frame_panel_h = 100,
 )
@@ -315,7 +320,7 @@ while running:
 						cb_img.mode,       # type: ignore[arg-type]  # we have to trust it's the correct literal
 					)
 
-					clip = Clip(f'cb image {len(session.clips)}', surf)
+					clip = SurfClip(f'cb image {len(session.clips)}', surf)
 					session.views.append(
 							View(
 								clip,
@@ -366,7 +371,7 @@ while running:
 					session.drag_mode = DragMode.none
 				else:
 					tools.fill(
-						curr_view.curr_surf(), session.paint_colour, session.selection.region  # type: ignore[union-attr]
+						session.selection, session.paint_colour  # type: ignore[arg-type]
 					)
 
 			# TODO: move to semi-modal section
@@ -377,7 +382,7 @@ while running:
 					session.drag_mode = DragMode.none
 				else:
 					tools.ellipse(
-						curr_view.curr_surf(), session.paint_colour, session.selection.region  # type: ignore[union-attr]
+						session.selection, session.paint_colour  # type: ignore[arg-type]
 					)
 
 		elif event.type == KEYUP:
@@ -441,11 +446,13 @@ while running:
 
 					if session.hover is not None: continue  # mouse on panel
 
+					if not curr_view.clip.writable: continue
 					surf = curr_view.curr_surf()
 					if not surf.get_rect().collidepoint((x, y)): continue
 
 					session.drag_mode = DragMode.default
 
+					assert curr_view.clip.writable, 'Cannot edit an RO clip'
 					surf.set_at((x, y), session.paint_colour)
 
 				elif session.curr_mode in (
@@ -545,15 +552,14 @@ while running:
 					# mouseup on fill must have a selection
 					# ... unless we get a sole mouseup event, ignore for now
 					session.curr_tool(
-						curr_view.curr_surf(),
-						session.selection.region,  # type: ignore[union-attr]
+						session.selection,  # type: ignore[union-attr]
 						session.paint_colour
 					)
 
 				elif session.curr_mode is Mode.region_extract:
 					print('MOUSEUP FOR REGION EXTRACT')
 					# mouseup on region_extract must have a selection
-					# ... unless we get a sole mouseup event, ignore for now
+					# ... unless we get a sole mouseup event, let it be for now
 					clip = session.curr_tool(session)
 					session.views.append(
 						View(
@@ -590,9 +596,9 @@ while running:
 					# session.selection should be a RegionIdent here
 					# because drag_mode not in (region_select, scrub)
 					session.curr_tool(
-						curr_view.curr_frame_ident(), pixel,
-						session.selection.frame_ident,  # type: ignore[union-attr]
-						session.selection.region,       # type: ignore[union-attr]
+						curr_view.curr_frame_ident(),
+						pixel,
+						session.selection,  # type: ignore[arg-type]
 					)
 
 				else:  # paint, type_colour, frame_select, pixel_region_select
@@ -639,6 +645,8 @@ while running:
 				x, y = curr_view.from_screen_space(event.pos)
 				x, y = int(x), int(y)
 
+				# Paint mode will be activated only if writable
+				assert curr_view.clip.writable, 'Cannot edit an RO clip'
 				surf = curr_view.curr_surf()
 				if not surf.get_rect().collidepoint((x, y)): continue
 

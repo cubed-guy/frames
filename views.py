@@ -1,5 +1,7 @@
-from typing import Optional, Callable, Union
+from abc import ABC, abstractmethod
+from typing import Optional, Callable, Union, TypeVar, Generic
 from utils import Mode, DragMode, FrameIdent, RegionIdent
+from text import TextSurface
 import pygame
 from pygame import SRCALPHA
 
@@ -8,7 +10,7 @@ Surface = Union[pygame.Surface, pygame.surface.Surface]
 # TODO: Put these in a common file
 from os.path import expanduser
 pygame.font.init()
-font_path = expanduser('~/Code/Product Sans Regular.ttf')
+font_path = expanduser('~/Assets/Product Sans Regular.ttf')
 font  = pygame.font.Font(font_path, 16)
 c = type('c', (), {'__matmul__': lambda s, x: (*x.to_bytes(3, 'big'),), '__sub__': lambda s, x: (x&255,)*3})()
 FRAME_WIDTH = 16
@@ -39,14 +41,16 @@ class Session:
 
 	# def update_lru_stack(self): ...  # call when we delete a view
 
-class Clip:  # contains frames
-	def __init__(self, name: str, surf: Surface):  # TODO: accept frame list
+T = TypeVar('T')
+class Clip(Generic[T], ABC):  # contains frames
+	def __init__(self, name: str, surf: T):  # TODO: accept frame list
 		self.name = name
 		self.frames = [surf]  # always len(frames) >= 1
 		self.views: list['View'] = []
+		self.writable: bool = True
 
-	def __getitem__(self, index):
-		return self.frames[index]
+	@abstractmethod
+	def __repr__(self): ...
 
 	def __len__(self):
 		return self.frames.__len__()
@@ -59,14 +63,35 @@ class Clip:  # contains frames
 			and frame_ident.frame in range(len(self)) # NOTE: Also acts as a None-check
 		)
 
+	def __getitem__(self, index: int) -> T:
+		return self.frames[index]
+
+	@abstractmethod
+	def surf_at(self, index: int) -> Surface: ...
+
+class SurfClip(Clip[Surface]):
 	def __repr__(self):
-		return f'Clip {self.name!r}'
+		return f'SurfClip {self.name!r}'
+
+	def surf_at(self, index) -> Surface:
+		return self.frames[index]
+
+class TextClip(Clip[TextSurface]):
+	def __init__(self, name: str, surf: TextSurface):
+		super().__init__(name, surf)
+		self.writable = False
+
+	def __repr__(self):
+		return f'TextClip {self.name}'
+
+	def surf_at(self, index) -> Surface:
+		return self.frames[index].surf()
 
 class View:  # contains a clip and how it will be rendered
 	def __init__(
-		self, clip, *,
-		frame_panel_h,
-		zoom = 1, scroll = None, frame_scroll = 0,
+		self, clip: Clip, *,
+		frame_panel_h: int,
+		zoom: float = 1, scroll: Optional[list[float]] = None, frame_scroll = 0,
 		tick=0, playing = False, play_fps = 24,
 	):
 		self.clip: Clip = clip
@@ -91,7 +116,7 @@ class View:  # contains a clip and how it will be rendered
 			f'({self.scroll[0]:.2f}, {self.scroll[1]:.2f})>'
 		)
 
-	def set_tick(self, tick):
+	def set_tick(self, tick: int):
 		self.tick: int = tick % (len(self.clip) * 1000 // self.play_fps)
 		self.curr_frame: int = self.tick * self.play_fps // 1000
 		print('tick', self.curr_frame, 'of', len(self.clip))
@@ -120,16 +145,16 @@ class View:  # contains a clip and how it will be rendered
 	def get_name(self):  # window.get_name() -> window.view.clip.name
 		return self.clip.name
 
-	def curr_surf(self):
-		return self.clip[self.curr_frame]
+	def curr_surf(self) -> Surface:
+		return self.clip.surf_at(self.curr_frame)
 
-	def curr_frame_ident(self):
+	def curr_frame_ident(self) -> FrameIdent:
 		return FrameIdent(self.clip, self.curr_frame)
 
-	def detach_from_clip(self):
+	def detach_from_clip(self) -> None:
 		self.clip.views.remove(self)
 
-	def copy(self):
+	def copy(self) -> 'View':
 		return self.__class__(
 			self.clip,  # Don't copy this. That's the whole point.
 			tick = self.tick,
