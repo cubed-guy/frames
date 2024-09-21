@@ -25,9 +25,15 @@ from PIL.BmpImagePlugin import DibImageFile as PilDib
 from typing import Union
 from os.path import expanduser
 import numpy as np
+from string import (
+	digits as digit_chars,
+	hexdigits as hex_chars,
+	printable as printable_chars,
+)
+
 from utils import DragMode, Mode, Region, RegionIdent, FrameIdent
 from views import View, Clip, SurfClip, TextClip, Session
-from text import TextSurface
+from text import TextFrame
 import tools
 
 import pygame
@@ -38,7 +44,7 @@ from pygame import (
 	K_LCTRL, K_RCTRL, K_LSHIFT, K_RSHIFT,
 	K_BACKSPACE, K_END, K_ESCAPE, K_TAB, K_F11, K_HOME, K_KP1, K_KP7,
 	K_LEFT, K_RETURN, K_RIGHT, K_SPACE, K_BACKSLASH, K_SLASH,
-	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_s, K_v, K_x,
+	K_b, K_c, K_d, K_e, K_f, K_g, K_k, K_n, K_p, K_s, K_v, K_x, K_z,
 	RESIZABLE, FULLSCREEN,
 )
 pygame.font.init()
@@ -146,7 +152,9 @@ def reset_lru() -> None:
 	# don't update_curr_view because view_idx is unchanged
 
 valid_chars = {
-	Mode.type_colour: set('0123456789abcdefABCDEF'),
+	Mode.type_colour: set(hex_chars),
+	Mode.type_text: set(printable_chars),
+	Mode.type_number: set(digit_chars),
 }
 
 # TODO: frame in view{frames} in session{views}
@@ -160,7 +168,7 @@ surf = pygame.image.load('berries.jpg')
 # Apparently, that's not a thing. We'll do it like this only then.
 
 # clip = SurfClip('berries', surf)
-clip: Clip = TextClip('hello', TextSurface(font_path, 216,
+clip: Clip = TextClip('hello', TextFrame(font_path, 216,
 	colour=fg, text='Hello, World!'
 ))
 
@@ -190,7 +198,7 @@ while running:
 		if event.type == KEYDOWN:
 			if event.key == K_F11: toggleFullscreen()
 
-			elif session.curr_mode is Mode.type_colour:
+			elif session.curr_mode in valid_chars:
 				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
 					if event.key == K_BACKSPACE:
 						split = session.text.rsplit(maxsplit=1)
@@ -199,18 +207,42 @@ while running:
 				elif event.key == K_BACKSPACE:
 					session.text = session.text[:-1]
 				elif event.key == K_RETURN:
-					if session.curr_mode is Mode.type_colour:
-						session.paint_colour = c@int(session.text[-6:], 16)
-						session.text = f'{int.from_bytes(session.paint_colour, "big"):06x}'
+					session.text = ''
+					session.initial_value = ''
 					session.curr_mode = Mode.paint
+					continue  # Nothing to update
 
-				elif event.key == K_ESCAPE:
+				elif event.key == K_ESCAPE:  # Cancel edit
 					if session.curr_mode is Mode.type_colour:
-						session.text = f'{int.from_bytes(session.paint_colour, "big"):06x}'
+						session.paint_colour = session.initial_value
+					elif session.curr_mode is Mode.type_text:
+						text_frame = curr_view.clip[curr_view.curr_frame]
+						text_frame.update_params(text = session.initial_value)
+					session.text = ''
+					session.initial_value = None
 					session.curr_mode = Mode.paint
+					continue
 
-				elif event.unicode and event.unicode in valid_chars[session.curr_mode]:
+				elif event.unicode in valid_chars[session.curr_mode]:
 					session.text += event.unicode
+
+
+				# Update preview value
+				frame = curr_view.clip[curr_view.curr_frame]
+				if session.curr_mode is Mode.type_colour:
+					colour = c@int(session.text[-6:] or '0', 16)
+
+					# We'll need a `Field` type
+					if isinstance(frame, TextFrame):
+						frame.update_params(colour = colour)
+					else:
+						session.paint_colour = colour
+
+				elif session.curr_mode is Mode.type_text:
+					frame.update_params(text = session.text)
+
+				elif session.curr_mode is Mode.type_number:
+					frame.update_params(size = int(session.text or '0'))
 
 			elif event.key == K_TAB:  # to change views
 				if event.mod & (KMOD_LCTRL|KMOD_RCTRL):
@@ -235,6 +267,20 @@ while running:
 			elif event.key == K_c: # c for colour
 				session.curr_mode = Mode.type_colour
 				session.curr_tool = None
+				if isinstance(curr_view.clip, TextClip):
+					text_frame = curr_view.clip[curr_view.curr_frame]
+					session.initial_value = text_frame.colour
+				else:
+					session.initial_value = session.paint_colour
+				session.text = f'{int.from_bytes(session.initial_value, "big"):06x}'
+			elif event.key == K_z: # z for siZe
+				if not isinstance(curr_view.clip, TextClip): continue
+
+				session.curr_mode = Mode.type_number
+				session.curr_tool = None
+				text_frame = curr_view.clip[curr_view.curr_frame]
+				session.initial_value = text_frame.size
+				session.text = f'{session.initial_value}'
 			elif event.key == K_s:
 				if event.mod & (KMOD_LSHIFT|KMOD_RSHIFT):
 					session.show_selection = True  # shift+esc to hide
@@ -247,6 +293,8 @@ while running:
 				else:
 					session.curr_mode = Mode.pixel_region_select  # b for box
 				session.curr_tool = None
+			elif event.key == K_p:
+				curr_view.show_parameters = not curr_view.show_parameters
 			elif event.key == K_SPACE: curr_view.playing = not curr_view.playing
 
 			elif event.key == K_LEFT:
@@ -376,7 +424,13 @@ while running:
 
 			# TODO: move to semi-modal section
 			elif event.key == K_e: # region direct tool
-				if session.selection is None or not session.show_selection:
+				if isinstance(curr_view.clip, TextClip):
+					session.curr_mode = Mode.type_text
+					session.curr_tool = None
+					text_frame = curr_view.clip[curr_view.curr_frame]
+					session.text = text_frame.text
+					session.initial_value = session.text
+				elif session.selection is None or not session.show_selection:
 					session.curr_tool = tools.ellipse
 					session.curr_mode = Mode.attached[session.curr_tool]
 					session.drag_mode = DragMode.none

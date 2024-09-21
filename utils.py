@@ -25,9 +25,12 @@ class AttachedEnum(Enum):
 class Mode(AttachedEnum):
 	__getitem__: Callable[..., 'Mode']  # Just an annotation can't hurt.
 
-	paint = auto()
 	type_colour = auto()
-	frame_select = auto()  # click to only set selected but not current
+	type_text = auto()
+	type_number = auto()
+
+	paint = auto()
+	frame_select = auto()  # click to set only selected, not playhead
 	pixel_region_select = auto()
 
 	# tool modes

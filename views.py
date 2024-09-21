@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Callable, Union, TypeVar, Generic
+from typing import Any, Optional, Callable, Union, TypeVar, Generic
 from utils import Mode, DragMode, FrameIdent, RegionIdent
-from text import TextSurface
+from text import TextFrame
 import pygame
 from pygame import SRCALPHA
 
@@ -20,6 +20,8 @@ yellow = c@0xffffe0
 black = c-0
 bg = c-34
 
+EMPTY_SURFACE = pygame.Surface((0, 0))
+
 class Session:
 	def __init__(self, view: 'View', paint_colour):
 		self.paint_colour = paint_colour
@@ -31,7 +33,8 @@ class Session:
 		self.hover: Optional[FrameIdent]  = None  # For highlight
 
 		self.show_selection = False
-		self.text = f'{int.from_bytes(paint_colour, "big"):06x}'
+		self.text = ''
+		self.initial_value: Any = None
 
 		self.clips = [view.clip]
 		self.views = [view]
@@ -76,13 +79,13 @@ class SurfClip(Clip[Surface]):
 	def surf_at(self, index) -> Surface:
 		return self.frames[index]
 
-class TextClip(Clip[TextSurface]):
-	def __init__(self, name: str, surf: TextSurface):
+class TextClip(Clip[TextFrame]):
+	def __init__(self, name: str, surf: TextFrame):
 		super().__init__(name, surf)
 		self.writable = False
 
 	def __repr__(self):
-		return f'TextClip {self.name}'
+		return f'TextClip {self.name!r}'
 
 	def surf_at(self, index) -> Surface:
 		return self.frames[index].surf()
@@ -105,6 +108,9 @@ class View:  # contains a clip and how it will be rendered
 
 		if scroll is None: scroll = [0, 0]
 		self.scroll: list[float] = scroll
+
+		self.show_frame_panel = True
+		self.show_parameters  = True
 
 		self.set_tick(tick)
 
@@ -226,8 +232,13 @@ class View:  # contains a clip and how it will be rendered
 		elif isinstance(selection, FrameIdent): selected_frame = selection
 		else: selected_frame = selection.frame_ident
 
-		frame_panel_surf = self.render_frame_panel(w, selected_frame, hover)
-		out.blit(frame_panel_surf, (0, h - self.frame_panel_h))
+		if self.show_parameters:
+			parameter_surf = self.render_parameter_panel()
+			out.blit(parameter_surf, (0, 0))
+
+		if self.show_frame_panel:
+			frame_panel_surf = self.render_frame_panel(w, selected_frame, hover)
+			out.blit(frame_panel_surf, (0, h - self.frame_panel_h))
 
 		return out
 
@@ -263,5 +274,30 @@ class View:  # contains a clip and how it will be rendered
 
 		frame_n_surface = font.render(f'{self.curr_frame}', True, col)
 		out.blit(frame_n_surface, (x, 0))
+
+		return out
+
+	def render_parameter_panel(self) -> Surface:
+		if isinstance(self.clip, SurfClip): return EMPTY_SURFACE
+		assert isinstance(self.clip, TextClip), f'{self.clip.__class__} clips are not yet supported'
+
+		frame = self.clip[self.curr_frame]
+		surfs = [
+			font.render(f'text = {frame.text!r}', True, c-192),
+			font.render(f'font_path = {frame.font_path!r}', True, c-192),
+			font.render(f'size = {frame.size}', True, c-192),
+			font.render(f'colour = {frame.colour}', True, c-192),
+			font.render(f'tracking = {frame.tracking}', True, c-192),
+		]
+
+		panel_w = max(surf.get_width()  for surf in surfs)
+		panel_h = sum(surf.get_height() for surf in surfs)
+
+		out = pygame.Surface((panel_w, panel_h), SRCALPHA)
+		out.fill((*c-27, 230))
+		y = 0
+		for surf in surfs:
+			out.blit(surf, (0, y))
+			y += surf.get_height()
 
 		return out
